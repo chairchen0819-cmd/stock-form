@@ -98,6 +98,16 @@
   .step { min-width: 52px; min-height: 46px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--card); font-size: 22px; font-weight: 700; }
   .mrow { flex-wrap: wrap; }
   .mrow .lab { flex-basis: 100%; }
+  .step.swap { font-size: 16px; font-weight: 600; color: var(--accent); }
+  .step:disabled { opacity: .35; }
+  .mempty { padding: 12px; color: var(--muted); font-size: 14px; }
+  .addbtn { display: block; width: 100%; min-height: 46px; border: 0; border-top: 1px dashed var(--line); background: var(--card); color: var(--accent); font-weight: 600; text-align: left; padding: 0 12px; }
+  /* 規格挑選視窗（換規格／加開） */
+  .pickq { width: 100%; min-height: 46px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--bg); padding: 0 12px; font-size: 17px; margin: 4px 0 8px; }
+  .picklist { max-height: 50vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+  .pickitem { display: flex; justify-content: space-between; gap: 8px; width: 100%; min-height: 46px; border: 0; border-bottom: 1px solid var(--line); background: var(--card); padding: 0 12px; text-align: left; align-items: center; }
+  .pickitem:last-child { border-bottom: 0; }
+  .pickitem .sub { color: var(--muted); font-size: 13px; white-space: nowrap; }
 
   .bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--card);
          border-top: 1px solid var(--line); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
@@ -139,6 +149,7 @@
 </header>
 <main id="app"><div class="center"><div class="spin"></div><p>載入中…</p></div></main>
 <dialog id="confirm"><div class="dlg" id="confirmBody"></div></dialog>
+<dialog id="pick"><div class="dlg" id="pickBody"></div></dialog>
 
 <script>
 /* ===== 部署設定：換成實際值（皆非機密，可公開）===== */
@@ -566,25 +577,77 @@ function computeUsage() {
 function typeTotal(type) { return state.data.specs.filter(function (sp) { return sp.type === type; }).reduce(function (a, sp) { return a + (state.counts[sp.code] || 0); }, 0); }
 function usageRows(u) { return u.length ? u.map(function (x) { return '<tr><td>' + esc(x.group) + '</td><td class="n">' + fmt(x.perDay) + ' kg</td></tr>'; }).join('') : '<tr><td>目前沒有開機中的規格</td><td></td></tr>'; }
 
+function specByCode(code) { return state.data.specs.filter(function (sp) { return sp.code === code; })[0]; }
+/* 一個機型底下目前要顯示的規格：開表單時有開機的，加上這次「換」或「加開」進來的（減到 0 也留著，方便看出變動） */
+function machineRowsHtml(t) {
+  var list = state.data.specs.filter(function (sp) { return sp.type === t && state.shown[sp.code]; });
+  if (!list.length) return '<div class="mempty">目前沒有開機中的規格</div>';
+  return list.map(function (sp) {
+    var n = state.counts[sp.code];
+    return '<div class="row mrow" id="sp-' + esc(sp.code) + '"><div class="lab"><span class="bn">' + esc(sp.name) + '</span>　<span class="sub" style="display:inline">每台每日 ' + fmt(sp.perDay) + ' kg</span></div>' +
+      '<button type="button" class="step" data-step="-1" data-code="' + esc(sp.code) + '" aria-label="減一台">－</button>' +
+      '<label class="qty"><input inputmode="numeric" autocomplete="off" data-mcode="' + esc(sp.code) + '" aria-label="' + esc(t + ' ' + sp.name) + ' 開機台數" value="' + (n == null ? '' : n) + '"><span class="unit">台</span></label>' +
+      '<button type="button" class="step" data-step="1" data-code="' + esc(sp.code) + '" aria-label="加一台">＋</button>' +
+      '<button type="button" class="step swap" data-swap="' + esc(sp.code) + '" aria-label="把一台' + esc(sp.name) + '換成別的規格">換</button></div>' +
+      '<div class="rowflags" id="mf-' + esc(sp.code) + '"></div>';
+  }).join('');
+}
+function redrawMachineRows() {
+  state.types.forEach(function (t, ti) { document.getElementById('mrows' + ti).innerHTML = machineRowsHtml(t); });
+  refreshMachine();
+}
+/* 規格挑選：mode='swap' 把來源規格的 1 台換到選中的規格；mode='add' 選中的規格加 1 台。只列同機型。 */
+function openPicker(mode, type, fromCode) {
+  var from = fromCode ? specByCode(fromCode) : null;
+  var pool = state.data.specs.filter(function (sp) { return sp.type === type && sp.code !== fromCode && (mode === 'swap' || !state.shown[sp.code]); });
+  var title = mode === 'swap' ? '把 1 台「' + esc(from.name) + '」換成：' : '加開哪個規格？<span class="hint">（' + esc(type) + '）</span>';
+  document.getElementById('pickBody').innerHTML = '<h3>' + title + '</h3>' +
+    '<input class="pickq" id="pickq" type="search" placeholder="輸入規格名稱搜尋，例如 812" autocomplete="off" aria-label="搜尋規格">' +
+    '<div class="picklist" id="picklist"></div>' +
+    '<div class="acts"><button class="btn" id="pickCancel" type="button">取消</button></div>';
+  function draw(q) {
+    q = String(q || '').trim().toLowerCase();
+    var hit = pool.filter(function (sp) { return !q || sp.name.toLowerCase().indexOf(q) >= 0; });
+    document.getElementById('picklist').innerHTML = hit.length ? hit.map(function (sp) {
+      var n = state.counts[sp.code] || 0;
+      return '<button type="button" class="pickitem" data-pick="' + esc(sp.code) + '"><span class="bn">' + esc(sp.name) + '</span><span class="sub">' +
+        (n ? '目前 ' + n + ' 台・' : '') + '每台每日 ' + fmt(sp.perDay) + ' kg</span></button>';
+    }).join('') : '<div class="mempty">找不到符合的規格</div>';
+  }
+  draw('');
+  var dlg = document.getElementById('pick'); dlg.showModal();
+  document.getElementById('pickq').addEventListener('input', function (e) { draw(e.target.value); });
+  document.getElementById('pickCancel').onclick = function () { dlg.close(); };
+  document.getElementById('picklist').onclick = function (e) {
+    var b = e.target.closest('[data-pick]'); if (!b) return;
+    var to = b.dataset.pick;
+    if (mode === 'swap') state.counts[fromCode] = Math.max(0, (state.counts[fromCode] || 0) - 1);
+    state.counts[to] = (state.counts[to] || 0) + 1;
+    state.shown[to] = true;
+    dlg.close(); redrawMachineRows();
+  };
+}
+
 function renderMachine() {
   var d = state.data;
-  state.counts = {}; state.types = [];
-  d.specs.forEach(function (sp) { state.counts[sp.code] = sp.count; if (state.types.indexOf(sp.type) < 0) state.types.push(sp.type); });
+  state.counts = {}; state.types = []; state.shown = {};
+  d.specs.forEach(function (sp) {
+    state.counts[sp.code] = sp.count; if (sp.count > 0) state.shown[sp.code] = true;
+    if (state.types.indexOf(sp.type) < 0) state.types.push(sp.type);
+  });
   document.getElementById('meta').textContent = d.name + (d.lastTime ? '・上次更新 ' + md(d.lastTime) + (d.lastBy ? '（' + d.lastBy + '）' : '') : '・首次填寫');
   var html = dateBar('eff', '這次變動從哪一天開始？<span class="hint">（夜班換規格可選昨天）</span>');
+  html += '<p class="hint" style="margin:10px 2px">只列出開機中的規格。換規格按「換」，多開一種規格按「＋加開其他規格」。</p>';
   state.types.forEach(function (t, ti) {
-    html += '<details class="cat" open><summary><span class="cname">' + esc(t) + '</span><span class="csum" id="mt' + ti + '"></span></summary><div class="cbody"><div class="grp">';
-    d.specs.filter(function (sp) { return sp.type === t; }).forEach(function (sp) {
-      html += '<div class="row mrow" id="sp-' + esc(sp.code) + '"><div class="lab"><span class="bn">' + esc(sp.name) + '</span>　<span class="sub" style="display:inline">每台每日 ' + fmt(sp.perDay) + ' kg</span></div>' +
-        '<button type="button" class="step" data-step="-1" data-code="' + esc(sp.code) + '" aria-label="減一台">－</button>' +
-        '<label class="qty"><input inputmode="numeric" autocomplete="off" data-mcode="' + esc(sp.code) + '" aria-label="' + esc(t + ' ' + sp.name) + ' 開機台數" value="' + sp.count + '"><span class="unit">台</span></label>' +
-        '<button type="button" class="step" data-step="1" data-code="' + esc(sp.code) + '" aria-label="加一台">＋</button></div><div class="rowflags" id="mf-' + esc(sp.code) + '"></div>';
-    });
-    html += '</div></div></details>';
+    html += '<details class="cat" open><summary><span class="cname">' + esc(t) + '</span><span class="csum" id="mt' + ti + '"></span></summary><div class="cbody"><div class="grp">' +
+      '<div id="mrows' + ti + '"></div><button type="button" class="addbtn" data-add="' + esc(t) + '">＋ 加開其他規格</button></div></div></details>';
   });
   html += '<div class="extra"><span class="lbl">預估每日用料 <span class="hint">（依目前台數即時試算）</span></span><table class="tbl" id="usage"></table></div>';
   app.innerHTML = html;
+  state.types.forEach(function (t, ti) { document.getElementById('mrows' + ti).innerHTML = machineRowsHtml(t); });
   app.addEventListener('click', function (e) {
+    var a = e.target.closest('[data-add]'); if (a) return openPicker('add', a.dataset.add);
+    var s = e.target.closest('[data-swap]'); if (s) return openPicker('swap', specByCode(s.dataset.swap).type, s.dataset.swap);
     var b = e.target.closest('[data-step]'); if (!b) return;
     var code = b.dataset.code, n = Math.max(0, (state.counts[code] || 0) + Number(b.dataset.step));
     state.counts[code] = n; app.querySelector('input[data-mcode="' + code + '"]').value = n; refreshMachine();
@@ -606,7 +669,9 @@ function refreshMachine() {
   d.specs.forEach(function (sp) {
     var n = state.counts[sp.code];
     if (n == null) bad = true;
-    document.getElementById('sp-' + sp.code).classList.toggle('edited', n != null && n !== sp.count);
+    var row = document.getElementById('sp-' + sp.code); if (!row) return; // 沒顯示的規格＝維持原台數（0）
+    row.classList.toggle('edited', n != null && n !== sp.count);
+    row.querySelector('[data-swap]').disabled = !n;
     document.getElementById('mf-' + sp.code).innerHTML = n == null ? '<span class="flag low">請填 0 以上的整數</span>'
       : n !== sp.count ? '<span class="flag big">原本 ' + sp.count + ' 台 → ' + n + ' 台</span>' : '';
   });
@@ -664,6 +729,7 @@ function demoCall(action, extra) {
     };
     if (action === 'init' && extra.form === 'machine') ok(Object.assign(base, { form: 'machine', name: '示範班長', lastTime: '2026-11-02 08:05:00', lastBy: '示範班長', specs: [
         { code: 'T-A', type: '傳統型', name: '規格A', perDay: 300, count: 3 }, { code: 'T-B', type: '傳統型', name: '規格B', perDay: 250, count: 2 },
+        { code: 'T-C', type: '傳統型', name: '規格C', perDay: 200, count: 0 },
         { code: 'H-A', type: '高速型', name: '規格A', perDay: 600, count: 1 }, { code: 'H-C', type: '高速型', name: '規格C', perDay: 500, count: 0 }],
       recipes: { '規格A': [{ category: 'PP', group: 'PP 均聚粒', ratio: 90 }, { category: 'PE', group: 'HDPE 粒', ratio: 10 }],
                  '規格B': [{ category: 'PP', group: 'PP 共聚粒', ratio: 85 }, { category: '碳酸鈣', group: '碳酸鈣母料', ratio: 13 }, { category: '色母', group: '白色母', ratio: 2 }],
