@@ -23,7 +23,7 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--ink); }
   body { font-size: 17px; line-height: 1.45; -webkit-text-size-adjust: 100%; }
-  button, input, textarea { font: inherit; color: inherit; }
+  button, input, textarea, select { font: inherit; color: inherit; }
 
   header { padding: 18px 16px 10px; }
   header h1 { margin: 0; font-size: 22px; letter-spacing: .02em; }
@@ -109,6 +109,23 @@
   .pickitem:last-child { border-bottom: 0; }
   .pickitem .sub { color: var(--muted); font-size: 13px; white-space: nowrap; }
 
+  /* 申報表單 */
+  .extra select.pickq { appearance: auto; }
+  .rrow { padding: 8px 0; border-top: 0; }
+  .rrow select { flex: 1; min-width: 0; min-height: 46px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--bg); padding: 0 8px; font-size: 16px; }
+  .rrow .qty { width: 104px; flex: none; }
+  .rrow .step { min-width: 44px; font-size: 18px; }
+  .apsum { margin-top: 6px; font-weight: 600; }
+  .apsum.ok { color: var(--accent); }
+  .apsum.bad { color: var(--warn); }
+  .apwarn { margin-top: 6px; color: var(--low); font-size: 14px; }
+  .apwarn:empty { display: none; }
+  .mine li { margin-bottom: 4px; }
+  .mine .st { font-size: 13px; border-radius: 999px; padding: 1px 8px; margin-left: 4px; background: var(--bg); color: var(--muted); }
+  .mine .st.ok { background: var(--accent-soft); color: var(--accent); }
+  .mine .st.no { background: var(--low-soft); color: var(--low); }
+  .applink { background: none; border: 0; color: var(--accent); font-weight: 600; padding: 8px 0; text-decoration: underline; }
+
   .bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--card);
          border-top: 1px solid var(--line); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
   .bar .in { max-width: 560px; margin: 0 auto; display: flex; gap: 10px; align-items: center; }
@@ -167,8 +184,8 @@ function param(name) {
   return r ? decodeURIComponent(r[1]) : null;
 }
 var DEMO = CONFIG.FORCE_DEMO || param('demo') === '1';
-var FORM = param('form') === 'machine' ? 'machine' : param('form') === 'receive' ? 'receive' : 'stock';
-var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況' };
+var FORM = ['machine', 'receive', 'apply'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
+var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌' };
 document.title = TITLES[FORM];
 document.getElementById('title').textContent = TITLES[FORM];
 
@@ -198,6 +215,13 @@ function catOf(name) { return (state.data.categories || []).filter(function (c) 
 function saveDraft() { try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ qty: state.qty, optIn: state.optIn, note: state.note, submitId: state.submitId, t: Date.now() })); } catch (e) {} }
 function loadDraft() { try { var d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); if (d && Date.now() - d.t < 12 * 3600 * 1000) return d; } catch (e) {} return null; }
 function clearDraft() { try { localStorage.removeItem(DRAFT_KEY); } catch (e) {} }
+/* 換到另一張表單（同一個 LIFF 頁面，換網址參數重新載入；示範模式保留 demo=1） */
+function gotoForm(form, extra) {
+  var q = ['form=' + form];
+  if (DEMO) q.push('demo=1');
+  Object.keys(extra || {}).forEach(function (k) { if (extra[k]) q.push(k + '=' + encodeURIComponent(extra[k])); });
+  location.href = location.pathname + '?' + q.join('&');
+}
 
 /* ---------- 後端呼叫 ---------- */
 function call(action, extra) {
@@ -224,6 +248,7 @@ function start() {
      state.data = res; state.submitId = newId();
      if (FORM === 'machine') return renderMachine();
      if (FORM === 'receive') return renderReceive();
+     if (FORM === 'apply') return renderApply();
      renderStock();
    })
    .catch(function (e) { renderError(e.message || String(e)); });
@@ -525,8 +550,13 @@ function renderReceive() {
   });
   state.rcats = grouped(d.items);
   html += '<div class="extra"><label for="note">備註 <span class="hint">（選填，例如供應商、單號）</span></label><textarea id="note" maxlength="500"></textarea></div>';
+  html += '<p class="hint" style="margin:12px 2px">清單裡沒有這家廠牌？<button type="button" class="applink" id="toApply">申報新廠牌</button></p>';
   app.innerHTML = html;
   accordion(app);
+  document.getElementById('toApply').onclick = function () {
+    if (Object.keys(state.qty).length && !confirm('已填的進貨數量還沒送出，離開會不見。確定先去申報嗎？')) return;
+    gotoForm('apply', { kind: 'brand' });
+  };
   app.addEventListener('input', function (e) {
     var t = e.target;
     if (t.matches('input[data-rcode]')) { var q = parseQty(t.value); if (q == null || q === 0) delete state.qty[t.dataset.rcode]; else state.qty[t.dataset.rcode] = q; refreshReceive(); }
@@ -604,6 +634,7 @@ function openPicker(mode, type, fromCode) {
   document.getElementById('pickBody').innerHTML = '<h3>' + title + '</h3>' +
     '<input class="pickq" id="pickq" type="search" placeholder="輸入規格名稱搜尋，例如 812" autocomplete="off" aria-label="搜尋規格">' +
     '<div class="picklist" id="picklist"></div>' +
+    '<button type="button" class="applink" id="pickApply">找不到？申報新規格</button>' +
     '<div class="acts"><button class="btn" id="pickCancel" type="button">取消</button></div>';
   function draw(q) {
     q = String(q || '').trim().toLowerCase();
@@ -618,6 +649,12 @@ function openPicker(mode, type, fromCode) {
   var dlg = document.getElementById('pick'); dlg.showModal();
   document.getElementById('pickq').addEventListener('input', function (e) { draw(e.target.value); });
   document.getElementById('pickCancel').onclick = function () { dlg.close(); };
+  // 申報要離開本頁：這次改的台數還沒送出，先問一聲
+  document.getElementById('pickApply').onclick = function () {
+    var dirty = state.data.specs.some(function (sp) { return state.counts[sp.code] !== sp.count; });
+    if (dirty && !confirm('這次改的台數還沒送出，離開會不見。確定先去申報嗎？')) return;
+    gotoForm('apply', { kind: 'spec', type: type, name: document.getElementById('pickq').value.trim() });
+  };
   document.getElementById('picklist').onclick = function (e) {
     var b = e.target.closest('[data-pick]'); if (!b) return;
     var to = b.dataset.pick;
@@ -704,6 +741,151 @@ function openMachineConfirm(quick) {
 }
 
 /* ================================================================
+   四、申報新規格／新廠牌（送出後只進「申報紀錄」，管理者核准才生效）
+   ================================================================ */
+function gkey(g) { return g.category + '|' + g.group; }
+function groupByKey(k) { return state.data.groups.filter(function (g) { return gkey(g) === k; })[0]; }
+/* 原料下拉：依類別分組（optgroup），選項只顯示品項名稱，手機上不會被截斷 */
+function groupOptions(sel) {
+  var html = '<option value="">選原料</option>', cat = null;
+  state.data.groups.forEach(function (g) {
+    if (g.category !== cat) { if (cat !== null) html += '</optgroup>'; cat = g.category; html += '<optgroup label="' + esc(cat) + '">'; }
+    html += '<option value="' + esc(gkey(g)) + '"' + (gkey(g) === sel ? ' selected' : '') + '>' + esc(g.group) + '</option>';
+  });
+  return html + (cat !== null ? '</optgroup>' : '');
+}
+function normBrand(s) { return String(s || '').replace(/\s+/g, '').toLowerCase(); }
+
+function renderApply() {
+  var d = state.data;
+  var kind = param('kind') === 'brand' ? 'brand' : 'spec', type = param('type');
+  state.ap = { kind: kind, type: d.types.indexOf(type) >= 0 ? type : '', name: (param('name') || '').slice(0, 30), perDay: '',
+               recipe: [{ key: '', ratio: '' }], gkey: '', brand: '' };
+  state.note = '';
+  document.getElementById('meta').textContent = d.name + '・送出後由管理者審核，核准後會用 LINE 通知你';
+  var html = '<div class="extra" style="margin:0 0 12px"><span class="lbl">要申報什麼？</span><div class="datebar">' +
+    '<button type="button" class="chip" data-kind="spec">新的紗規格</button><button type="button" class="chip" data-kind="brand">原料多一家廠牌</button></div></div>';
+  html += '<div id="apSpec">' +
+    '<div class="extra"><span class="lbl">哪一種機台？</span><div class="datebar">' + d.types.map(function (t) {
+      return '<button type="button" class="chip" data-type="' + esc(t) + '">' + esc(t) + '</button>'; }).join('') + '</div></div>' +
+    '<div class="extra"><label for="aname">規格名稱</label><input class="pickq" id="aname" maxlength="30" autocomplete="off" placeholder="例如 860小" value="' + esc(state.ap.name) + '"><div class="apwarn" id="adup"></div></div>' +
+    '<div class="extra"><label for="aper">每台每日用料 <span class="hint">（不知道可以空白，管理者會補）</span></label>' +
+      '<div><label class="qty" style="width:100%;max-width:none"><input id="aper" inputmode="decimal" autocomplete="off" placeholder="例如 2700"><span class="unit">kg</span></label></div></div>' +
+    '<div class="extra"><span class="lbl">配方 <span class="hint" id="areuse">（每種原料占幾 %，加起來要 100）</span></span><div id="arecipe"></div>' +
+      '<button type="button" class="addbtn" id="aaddr" style="border-top:0">＋ 再加一種原料</button><div class="apsum" id="asum"></div></div>' +
+    '</div>';
+  html += '<div id="apBrand">' +
+    '<div class="extra"><label for="agroup">哪一種原料？</label><select class="pickq" id="agroup">' + groupOptions('') + '</select><div class="hint" id="abrands"></div></div>' +
+    '<div class="extra"><label for="abrand">新廠牌與型號</label><input class="pickq" id="abrand" maxlength="40" autocomplete="off" placeholder="例如 台化 S1003"><div class="apwarn" id="abdup"></div></div>' +
+    '</div>';
+  html += '<div class="extra"><label for="note">備註 <span class="hint">（選填，例如哪個客戶要的、什麼時候開機）</span></label><textarea id="note" maxlength="500"></textarea></div>';
+  if (d.mine && d.mine.length) html += '<div class="extra"><span class="lbl">我最近的申報</span><ul class="mine" style="margin:0;padding-left:20px">' + d.mine.map(function (m) {
+    var cls = m.status === '已核准' ? ' ok' : m.status === '已退回' ? ' no' : '';
+    return '<li>' + esc(m.title) + '<span class="st' + cls + '">' + esc(m.status) + '</span>' + (m.reason ? '<div class="hint">' + esc(m.reason) + '</div>' : '') + '</li>';
+  }).join('') + '</ul></div>';
+  app.innerHTML = html;
+  drawRecipe();
+  app.addEventListener('click', function (e) {
+    var k = e.target.closest('[data-kind]'); if (k) { state.ap.kind = k.dataset.kind; return refreshApply(); }
+    var t = e.target.closest('[data-type]'); if (t) { state.ap.type = t.dataset.type; return refreshApply(); }
+    var del = e.target.closest('[data-rdel]');
+    if (del) { state.ap.recipe.splice(Number(del.dataset.rdel), 1); if (!state.ap.recipe.length) state.ap.recipe.push({ key: '', ratio: '' }); drawRecipe(); return refreshApply(); }
+    if (e.target.id === 'aaddr') { state.ap.recipe.push({ key: '', ratio: '' }); drawRecipe(); refreshApply(); }
+  });
+  app.addEventListener('input', function (e) {
+    var t = e.target, ap = state.ap;
+    if (t.id === 'aname') ap.name = t.value;
+    else if (t.id === 'aper') ap.perDay = t.value;
+    else if (t.id === 'abrand') ap.brand = t.value;
+    else if (t.id === 'note') state.note = t.value;
+    else if (t.matches('[data-rr]')) ap.recipe[Number(t.dataset.rr)].ratio = t.value;
+    refreshApply();
+  });
+  app.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t.matches('[data-ri]')) state.ap.recipe[Number(t.dataset.ri)].key = t.value;
+    else if (t.id === 'agroup') state.ap.gkey = t.value;
+    refreshApply();
+  });
+  mountBar('<div class="prog" id="prog"></div><button class="btn primary" id="submit" type="button">送出</button>');
+  document.getElementById('submit').onclick = openApplyConfirm;
+  refreshApply();
+}
+function drawRecipe() {
+  document.getElementById('arecipe').innerHTML = state.ap.recipe.map(function (r, i) {
+    return '<div class="row rrow"><select data-ri="' + i + '" aria-label="第 ' + (i + 1) + ' 種原料">' + groupOptions(r.key) + '</select>' +
+      '<label class="qty"><input data-rr="' + i + '" inputmode="decimal" autocomplete="off" aria-label="第 ' + (i + 1) + ' 種原料比例" value="' + esc(r.ratio) + '"><span class="unit">%</span></label>' +
+      '<button type="button" class="step" data-rdel="' + i + '" aria-label="刪掉這一種原料">×</button></div>';
+  }).join('');
+}
+/* 檢查目前填的內容；回傳 { ok, msg（底部列顯示）, ... }。規則與後端 validateSpecApply_／validateBrandApply_ 相同 */
+function checkApply() {
+  var d = state.data, ap = state.ap;
+  if (ap.kind === 'brand') {
+    var g = groupByKey(ap.gkey), brand = ap.brand.trim();
+    var dup = g && brand && g.brands.some(function (b) { return normBrand(b) === normBrand(brand); });
+    return { ok: !!g && !!brand && !dup, dup: dup, group: g, msg: !g ? '請選原料' : !brand ? '請填新廠牌' : dup ? '這家廠牌已經有了' : '可以送出' };
+  }
+  var name = ap.name.trim();
+  var dupSpec = !!name && d.specs.some(function (sp) { return sp.type === ap.type && sp.name === name; });
+  var reuseOk = !!name && d.recipeNames.indexOf(name) >= 0;
+  var filled = ap.recipe.filter(function (r) { return r.key || String(r.ratio).trim() !== ''; });
+  var half = filled.some(function (r) { return !r.key || parseQty(r.ratio) == null || !(parseQty(r.ratio) > 0 && parseQty(r.ratio) <= 100); });
+  var keys = filled.map(function (r) { return r.key; });
+  var twice = keys.some(function (k, i) { return k && keys.indexOf(k) !== i; });
+  var sum = half ? null : filled.reduce(function (a, r) { return addQty(a, parseQty(r.ratio)); }, 0);
+  var perOk = ap.perDay.trim() === '' || parseQty(ap.perDay) != null;
+  var recipeOk = filled.length ? (!half && !twice && sum === 100) : reuseOk;
+  var msg = !ap.type ? '請選機台' : !name ? '請填規格名稱' : dupSpec ? '這個規格已經有了' : !perOk ? '用料請填數字' :
+    half ? '配方每一列都要選原料、填比例' : twice ? '配方有重複的原料' :
+    !filled.length ? (reuseOk ? '配方沿用同名規格' : '請填配方') : sum === 100 ? '配方加總 100% ✔' :
+    '配方加總 ' + fmt(sum) + '%（' + (sum < 100 ? '還差 ' + fmt(addQty(100, -sum)) : '多了 ' + fmt(addQty(sum, -100))) + '%）';
+  return { ok: !!ap.type && !!name && !dupSpec && perOk && recipeOk, msg: msg, dupSpec: dupSpec, reuseOk: reuseOk, filled: filled, sum: sum };
+}
+function refreshApply() {
+  var ap = state.ap, c = checkApply();
+  app.querySelectorAll('[data-kind]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.kind === ap.kind)); });
+  app.querySelectorAll('[data-type]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.type === ap.type)); });
+  document.getElementById('apSpec').hidden = ap.kind !== 'spec';
+  document.getElementById('apBrand').hidden = ap.kind !== 'brand';
+  if (ap.kind === 'spec') {
+    document.getElementById('adup').textContent = c.dupSpec ? '「' + ap.type + ' ' + ap.name.trim() + '」已經有了，請回機台表單按「＋ 加開其他規格」搜尋。' : '';
+    document.getElementById('areuse').textContent = c.reuseOk ? '（另一種機台已有同名規格，可以不填，會沿用它的配方）' : '（每種原料占幾 %，加起來要 100）';
+    var s = document.getElementById('asum');
+    s.textContent = c.filled.length ? (c.sum == null ? '' : '加總 ' + fmt(c.sum) + '%') : '';
+    s.className = 'apsum ' + (c.sum === 100 ? 'ok' : 'bad');
+  } else {
+    var g = groupByKey(ap.gkey);
+    document.getElementById('abrands').textContent = g ? '目前有：' + (g.brands.length ? g.brands.join('、') : '（沒有）') + '・單位 ' + g.unit : '';
+    document.getElementById('abdup').textContent = c.dup ? '這家廠牌已經有了，不用申報。' : '';
+  }
+  document.getElementById('prog').innerHTML = esc(c.msg);
+  document.getElementById('submit').disabled = !c.ok || state.busy;
+}
+function applyPayload() {
+  var ap = state.ap, c = checkApply();
+  if (ap.kind === 'brand') return { kind: 'brand', category: c.group.category, group: c.group.group, brand: ap.brand.trim(), note: state.note };
+  return { kind: 'spec', type: ap.type, name: ap.name.trim(), perDay: ap.perDay.trim() === '' ? '' : parseQty(ap.perDay), note: state.note,
+           recipe: c.filled.map(function (r) { var g = groupByKey(r.key); return { category: g.category, group: g.group, ratio: parseQty(r.ratio) }; }) };
+}
+function openApplyConfirm() {
+  var p = applyPayload(), h = '<h3>確認送出申報？</h3>';
+  if (p.kind === 'brand') h += '<table class="tbl"><tr><td>原料</td><td class="n">' + esc(p.group) + '</td></tr><tr><td>新廠牌</td><td class="n">' + esc(p.brand) + '</td></tr></table>';
+  else h += '<table class="tbl"><tr><td>機台</td><td class="n">' + esc(p.type) + '</td></tr><tr><td>規格名稱</td><td class="n">' + esc(p.name) + '</td></tr>' +
+    '<tr><td>每台每日用料</td><td class="n">' + (p.perDay === '' ? '未填' : fmt(p.perDay) + ' kg') + '</td></tr></table>' +
+    '<div class="sec">配方</div>' + (p.recipe.length ? '<table class="tbl">' + p.recipe.map(function (x) {
+      return '<tr><td>' + esc(x.group) + '</td><td class="n">' + fmt(x.ratio) + '%</td></tr>'; }).join('') + '</table>' : '<div>沿用同名規格的配方</div>');
+  h += '<p class="hint">送出後要等管理者核准才會出現在表單裡。</p>';
+  showDialog(h, function () {
+    state.busy = true; refreshApply();
+    var btn = document.getElementById('submit'); btn.textContent = '送出中…';
+    call('submitApply', Object.assign({ submitId: state.submitId }, p))
+      .then(function (res) { renderDoneShell('已送出申報', '<p>' + esc(res.title) + '</p><p>管理者核准後會用 LINE 通知你。</p>'); })
+      .catch(function (e) { failSubmit(e, btn, refreshApply); });
+  });
+}
+
+/* ================================================================
    示範資料（?demo=1 或 FORCE_DEMO 時使用；不連 LINE 與後端）
    ================================================================ */
 function demoCall(action, extra) {
@@ -735,6 +917,17 @@ function demoCall(action, extra) {
                  '規格B': [{ category: 'PP', group: 'PP 共聚粒', ratio: 85 }, { category: '碳酸鈣', group: '碳酸鈣母料', ratio: 13 }, { category: '色母', group: '白色母', ratio: 2 }],
                  '規格C': [{ category: 'PP', group: 'PP 均聚粒', ratio: 80 }, { category: 'PE', group: 'LLDPE 粒', ratio: 20 }] } }));
     else if (action === 'init' && extra.form === 'receive') ok(Object.assign(base, { form: 'receive', items: items }));
+    else if (action === 'init' && extra.form === 'apply') {
+      var groups = [], gi = {};
+      items.forEach(function (it) { var k = it.category + '|' + it.group;
+        if (!(k in gi)) { gi[k] = groups.length; groups.push({ category: it.category, group: it.group, unit: it.unit, brands: [] }); }
+        groups[gi[k]].brands.push(it.brand); });
+      ok(Object.assign(base, { form: 'apply', groups: groups, types: ['傳統型', '高速型'], recipeNames: ['規格A', '規格B', '規格C'],
+        specs: [{ type: '傳統型', name: '規格A' }, { type: '傳統型', name: '規格B' }, { type: '傳統型', name: '規格C' }, { type: '高速型', name: '規格A' }, { type: '高速型', name: '規格C' }],
+        mine: [{ time: '2026-11-01 10:00:00', title: '新規格「高速型 規格B」', status: '已核准', reason: '' }] }));
+    }
+    else if (action === 'submitApply') ok({ ok: true, applyId: 'DEMO-A' + Date.now().toString().slice(-6),
+      title: extra.kind === 'brand' ? '新廠牌「' + extra.group + '／' + extra.brand + '」' : '新規格「' + extra.type + ' ' + extra.name + '」' });
     else if (action === 'init') ok(Object.assign(base, { form: 'stock', items: items, ledger: ledger, bigChangeRatio: 0.5, categories: [
         { category: 'PP', cycle: 7, due: true, lastTime: '2026-10-27 09:30:00' }, { category: 'PE', cycle: 7, due: true, lastTime: '2026-10-27 09:30:00' },
         { category: '碳酸鈣', cycle: 14, due: false, lastTime: '2026-10-27 09:30:00' }, { category: '色母', cycle: 30, due: false, lastTime: '2026-10-20 09:30:00' }] }));
