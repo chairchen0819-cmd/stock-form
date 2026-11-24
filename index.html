@@ -124,6 +124,9 @@
   .mine .st { font-size: 13px; border-radius: 999px; padding: 1px 8px; margin-left: 4px; background: var(--bg); color: var(--muted); }
   .mine .st.ok { background: var(--accent-soft); color: var(--accent); }
   .mine .st.no { background: var(--low-soft); color: var(--low); }
+  .mine li.voided .rl { text-decoration: line-through; color: var(--muted); }
+  .mine .rl { font-size: 14px; }
+  .dlg .vreason { width: 100%; min-height: 44px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--bg); padding: 8px 10px; }
   .applink { background: none; border: 0; color: var(--accent); font-weight: 600; padding: 8px 0; text-decoration: underline; }
 
   .bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--card);
@@ -551,8 +554,13 @@ function renderReceive() {
   state.rcats = grouped(d.items);
   html += '<div class="extra"><label for="note">備註 <span class="hint">（選填，例如供應商、單號）</span></label><textarea id="note" maxlength="500"></textarea></div>';
   html += '<p class="hint" style="margin:12px 2px">清單裡沒有這家廠牌？<button type="button" class="applink" id="toApply">申報新廠牌</button></p>';
+  html += '<div id="recentBox">' + recentReceiptsHtml() + '</div>';
   app.innerHTML = html;
   accordion(app);
+  app.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-void]');
+    if (b) openVoidConfirm(Number(b.dataset.void));
+  });
   document.getElementById('toApply').onclick = function () {
     if (Object.keys(state.qty).length && !confirm('已填的進貨數量還沒送出，離開會不見。確定先去申報嗎？')) return;
     gotoForm('apply', { kind: 'brand' });
@@ -565,6 +573,40 @@ function renderReceive() {
   mountBar('<div class="prog" id="prog"></div><button class="btn primary" id="submit" type="button">送出</button>');
   document.getElementById('submit').onclick = openReceiveConfirm;
   wireDate('rdate', refreshReceive);
+}
+/* 我最近登錄的進貨（本人 N 天內）：打錯可整筆作廢，再重新登錄正確的；已盤點過的不能作廢（盤點已校正） */
+function recentReceiptsHtml() {
+  var r = state.data.recent || [];
+  if (!r.length) return '';
+  return '<div class="extra" id="recent"><span class="lbl">我最近 ' + (state.data.voidDays || 7) + ' 天登錄的進貨 <span class="hint">打錯了：作廢後重新登錄</span></span>' +
+    '<ul class="mine" style="margin:0;padding-left:20px">' + r.map(function (b, i) {
+      return '<li' + (b.voided ? ' class="voided"' : '') + '><b>到貨 ' + esc(b.date.slice(5).replace('-', '/')) + '</b> <span class="hint">登錄 ' + esc(md(b.time)) + '</span>' +
+        (b.voided ? '<span class="st no">已作廢</span>' : '') +
+        '<div class="rl">' + b.lines.map(function (l) { return esc(l.name) + ' ' + fmt(l.qty) + ' ' + esc(l.unit); }).join('、') + '</div>' +
+        (b.voidable ? '<button type="button" class="applink" data-void="' + i + '">作廢這筆</button>'
+                    : (!b.voided && b.blockReason ? '<div class="hint">' + esc(b.blockReason) + '</div>' : '')) + '</li>';
+    }).join('') + '</ul></div>';
+}
+function openVoidConfirm(i) {
+  var b = state.data.recent[i];
+  document.getElementById('confirmBody').innerHTML = '<h3>作廢這筆進貨？</h3><div>到貨日 <b>' + esc(b.date) + '</b>，共 ' + b.lines.length + ' 項</div>' +
+    '<table class="tbl">' + b.lines.map(function (l) { return '<tr><td>' + esc(l.name) + '</td><td class="n">' + fmt(l.qty) + ' ' + esc(l.unit) + '</td></tr>'; }).join('') + '</table>' +
+    '<div class="hint">作廢後這一整筆都不計入庫存，正確的數量要<b>重新登錄一次</b>。</div>' +
+    '<label for="vreason" style="display:block;margin:10px 0 4px">原因（選填）</label><input id="vreason" class="vreason" maxlength="200" placeholder="例：多打一個 0">' +
+    '<div class="acts"><button class="btn" id="back" type="button">取消</button><button class="btn primary" id="go" type="button">確認作廢</button></div>';
+  var dlg = document.getElementById('confirm'); dlg.showModal();
+  document.getElementById('back').onclick = function () { dlg.close(); };
+  document.getElementById('go').onclick = function () {
+    var reason = document.getElementById('vreason').value.trim();
+    dlg.close();
+    call('voidReceipt', { submitId: newId(), batchId: b.batchId, reason: reason })
+      .then(function () {
+        b.voided = true; b.voidable = false;
+        document.getElementById('recentBox').innerHTML = recentReceiptsHtml();
+        alert('已作廢。正確的數量請在上方重新登錄一次。');
+      })
+      .catch(function (e) { if (e.code !== 'AUTH') alert('作廢失敗：' + (e.message || e)); });
+  };
 }
 function refreshReceive() {
   var codes = Object.keys(state.qty), total = codes.reduce(function (a, c) { return addQty(a, state.qty[c]); }, 0);
@@ -916,7 +958,12 @@ function demoCall(action, extra) {
       recipes: { '規格A': [{ category: 'PP', group: 'PP 均聚粒', ratio: 90 }, { category: 'PE', group: 'HDPE 粒', ratio: 10 }],
                  '規格B': [{ category: 'PP', group: 'PP 共聚粒', ratio: 85 }, { category: '碳酸鈣', group: '碳酸鈣母料', ratio: 13 }, { category: '色母', group: '白色母', ratio: 2 }],
                  '規格C': [{ category: 'PP', group: 'PP 均聚粒', ratio: 80 }, { category: 'PE', group: 'LLDPE 粒', ratio: 20 }] } }));
-    else if (action === 'init' && extra.form === 'receive') ok(Object.assign(base, { form: 'receive', items: items }));
+    else if (action === 'init' && extra.form === 'receive') ok(Object.assign(base, { form: 'receive', items: items, voidDays: 7, recent: [
+        { batchId: 'DEMO-R1', date: '2026-11-03', time: '2026-11-03 08:10:00', voided: false, voidable: true, blockReason: '',
+          lines: [{ name: 'PP 均聚粒／廠牌A', qty: 10000, unit: 'kg' }, { name: 'HDPE 粒／廠牌C', qty: 500, unit: 'kg' }] },
+        { batchId: 'DEMO-R0', date: '2026-10-30', time: '2026-10-30 14:20:00', voided: false, voidable: false,
+          blockReason: 'PP 在 11/02 09:30 已盤點過，庫存已用實盤校正，不需要作廢（作廢反而會少算）', lines: [{ name: 'PP 均聚粒／廠牌B', qty: 2000, unit: 'kg' }] }] }));
+    else if (action === 'voidReceipt') ok({ ok: true, batchId: extra.batchId });
     else if (action === 'init' && extra.form === 'apply') {
       var groups = [], gi = {};
       items.forEach(function (it) { var k = it.category + '|' + it.group;
