@@ -149,6 +149,10 @@
   .ysame { margin: 0 12px 4px; }
   .badge.done { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .badge.todo { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+  .vlinks { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .vlinks .chip { flex: 1 1 auto; }
+  .vsec { margin: 0 0 14px; }
+  .vsec > summary { font-size: 17px; }
   .yf.spot .qty { border-style: dashed; border-color: var(--accent); }
   .yspot { margin: 8px 12px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 14px; }
 
@@ -210,8 +214,8 @@ function param(name) {
   return r ? decodeURIComponent(r[1]) : null;
 }
 var DEMO = CONFIG.FORCE_DEMO || param('demo') === '1';
-var FORM = ['machine', 'receive', 'apply', 'yarn', 'yarnstock'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
-var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌', yarn: '抽紗機數據', yarnstock: '庫存紗盤點' };
+var FORM = ['machine', 'receive', 'apply', 'yarn', 'yarnstock', 'view'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
+var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌', yarn: '抽紗機數據', yarnstock: '庫存紗盤點', view: '查詢' };
 document.title = TITLES[FORM];
 document.getElementById('title').textContent = TITLES[FORM];
 
@@ -277,6 +281,7 @@ function start() {
      if (FORM === 'apply') return renderApply();
      if (FORM === 'yarn') return renderYarn();
      if (FORM === 'yarnstock') return renderYarnStock();
+     if (FORM === 'view') return renderView();
      renderStock();
    })
    .catch(function (e) { renderError(e.message || String(e)); });
@@ -1161,9 +1166,10 @@ function sParse(raw) {
   return isFinite(n) ? n : NaN;
 }
 function sBad(n) { var max = state.data.max; return n === null ? '要填（沒有填 0）' : isNaN(n) ? '不是數字' : n < 0 || n > max ? '要在 0～' + max : Math.round(n * 2) !== n * 2 ? '只能整數或 .5' : ''; }
+function sGrp(sp) { return sp.group || sp.type; } // 紗盤點照刀距分組（後端已排序）；舊資料沒有 group 時用機型
 function sTypes() {
   var types = [];
-  state.data.specs.forEach(function (sp) { if (types.indexOf(sp.type) < 0) types.push(sp.type); });
+  state.data.specs.forEach(function (sp) { if (types.indexOf(sGrp(sp)) < 0) types.push(sGrp(sp)); });
   return types;
 }
 function renderYarnStock() {
@@ -1176,7 +1182,7 @@ function renderYarnStock() {
   var nSpot = d.specs.filter(function (sp) { return sp.spot; }).length;
   if (nSpot) html += '<div class="yspot" style="margin:0 0 10px">🔍 <b>今天抽查 ' + nSpot + ' 個規格</b>：標 🔍 的沒有帶上次的值，請到倉庫實際點數。</div>';
   sTypes().forEach(function (type, ti) {
-    var list = d.specs.filter(function (sp) { return sp.type === type; });
+    var list = d.specs.filter(function (sp) { return sGrp(sp) === type; });
     html += '<details class="cat"' + (ti === 0 ? ' open' : '') + '><summary><span class="cname">' + esc(type) + '</span><span class="csum" id="ss' + ti + '"></span></summary><div class="cbody">';
     list.forEach(function (sp) {
       html += '<div class="row"><div class="lab"><div class="bn">' + (sp.spot ? '🔍 ' : '') + esc(sp.name) + '</div><div class="sub" id="ssub-' + esc(sp.code) + '"></div></div>' +
@@ -1204,7 +1210,7 @@ function refreshYarnStock() {
   var d = state.data, bad = 0, empty = 0, changed = 0;
   sTypes().forEach(function (type, ti) {
     var sum = 0, sbad = 0;
-    d.specs.filter(function (sp) { return sp.type === type; }).forEach(function (sp) {
+    d.specs.filter(function (sp) { return sGrp(sp) === type; }).forEach(function (sp) {
       var n = sParse(state.s[sp.code]), msg = sBad(n), el = document.getElementById('ssub-' + sp.code);
       if (msg) { if (n === null) empty++; else { bad++; sbad++; } }
       else { sum = addQty(sum, n); if (!sp.spot && sp.last !== n) changed++; }
@@ -1222,13 +1228,13 @@ function openYarnStockConfirm() {
   var d = state.data, total = 0, rows = [];
   sTypes().forEach(function (type) {
     var sum = 0;
-    d.specs.filter(function (sp) { return sp.type === type; }).forEach(function (sp) { sum = addQty(sum, sParse(state.s[sp.code])); });
+    d.specs.filter(function (sp) { return sGrp(sp) === type; }).forEach(function (sp) { sum = addQty(sum, sParse(state.s[sp.code])); });
     total = addQty(total, sum); rows.push('<tr><td>' + esc(type) + '</td><td class="n">' + fmt(sum) + ' 板</td></tr>');
   });
   var changed = d.specs.filter(function (sp) { return d.lastTime && !sp.spot && sp.last !== sParse(state.s[sp.code]); });
   var h = '<h3>確認送出？</h3><div>盤點日 ' + esc(document.getElementById('sdate').value) + '・共 <b>' + fmt(total) + '</b> 板</div><table class="tbl">' + rows.join('') + '</table>';
   if (changed.length) h += '<div class="sec">和上次不同（' + changed.length + ' 項）</div><ul>' + changed.slice(0, 15).map(function (sp) {
-    return '<li>' + esc(sp.type + ' ' + sp.name) + '：' + fmt(sp.last == null ? 0 : sp.last) + ' → <b>' + fmt(sParse(state.s[sp.code])) + '</b></li>'; }).join('') + (changed.length > 15 ? '<li>…另 ' + (changed.length - 15) + ' 項</li>' : '') + '</ul>';
+    return '<li>' + esc(sp.name + '（' + sGrp(sp) + '）') + '：' + fmt(sp.last == null ? 0 : sp.last) + ' → <b>' + fmt(sParse(state.s[sp.code])) + '</b></li>'; }).join('') + (changed.length > 15 ? '<li>…另 ' + (changed.length - 15) + ' 項</li>' : '') + '</ul>';
   h += '<div class="hint">' + (d.notify.length ? '送出後通知：' + esc(d.notify.join('、')) + '（及管理者）' : '送出後通知管理者') + '</div>';
   showDialog(h, submitYarnStock);
 }
@@ -1241,6 +1247,63 @@ function submitYarnStock() {
       renderDoneShell('已送出，謝謝！', '<p>共 ' + res.rows + ' 個規格・合計 ' + fmt(res.total) + ' 板</p><p>' + (res.notified ? '已通知主管 ' + res.notified + ' 位及管理者。' : '已通知管理者。') + '</p>');
     })
     .catch(function (e) { failSubmit(e, btn, refreshYarnStock); });
+}
+
+/* ================================================================
+   七、查詢頁（?form=view）：用看的取代推播，開頁面不耗 LINE 額度；內容依角色由後端決定
+   ================================================================ */
+var FORM_NAMES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機', yarn: '抽紗紀錄', yarnstock: '庫存紗盤點', apply: '申報新規格' };
+function renderView() {
+  var d = state.data, html = '';
+  document.getElementById('meta').textContent = d.name + '・' + d.today + ' 查詢';
+  html += '<div class="vlinks">' + d.forms.concat(['apply']).map(function (f) {
+    return '<button type="button" class="chip" data-goto="' + f + '">' + FORM_NAMES[f] + '</button>'; }).join('') + '</div>';
+  if (d.days) html += viewDays(d.days);
+  if (d.yarnToday) html += viewYarnToday(d.yarnToday);
+  if (d.yarnStock) html += viewYarnStock(d.yarnStock);
+  if (!d.days && !d.yarnToday && !d.yarnStock) html += '<p class="hint">您的角色沒有可查詢的資料。</p>';
+  app.innerHTML = html;
+  app.querySelectorAll('[data-goto]').forEach(function (b) { b.onclick = function () { gotoForm(b.dataset.goto); }; });
+}
+function viewDays(v) {
+  if (v.error) return '<details class="cat vsec" open><summary><span class="cname">原料可用天數</span></summary><div class="cbody"><p style="color:var(--low)">算不出來：' + esc(v.error) + '</p></div></details>';
+  var short = v.list.filter(function (x) { return x.short; }).length;
+  var h = '<details class="cat vsec" open><summary><span class="cname">原料可用天數</span><span class="csum">' +
+    (short ? '<b style="color:var(--low)">要叫料 ' + short + ' 項</b>' : '沒有要叫料') + '</span></summary><div class="cbody">';
+  if (v.problems.length) h += '<p style="color:var(--low)">設定有誤：' + esc(v.problems.slice(0, 3).join('；')) + '</p>';
+  h += '<table class="tbl">' + v.list.map(function (x) {
+    var right = !x.counted ? '尚未盤點' : '約 ' + x.days + ' 天（' + esc(x.runout) + '）';
+    return '<tr><td' + (x.short ? ' class="lowt"' : '') + '>' + (x.short ? '🔴 ' : '') + esc(x.group) +
+      '<div class="hint">理論 ' + fmt(x.theo) + ' ' + esc(x.unit) + (x.lead ? '・前置 ' + x.lead + ' 天' : '') + (x.reserve ? '・留倉 ' + fmt(x.reserve) : '') + '</div></td>' +
+      '<td class="n' + (x.short ? ' lowt' : '') + '">' + right + '</td></tr>';
+  }).join('') + '</table>';
+  h += '<p class="hint">機台最後更新：' + (v.machineTime ? esc(md(v.machineTime)) : '尚無') + '</p></div></details>';
+  return h;
+}
+function viewYarnToday(v) {
+  var miss = v.hosts.filter(function (h) { return !h.done; }).length;
+  var h = '<details class="cat vsec" open><summary><span class="cname">抽紗今天</span><span class="csum">' +
+    (!v.workday ? '今天不用填' : miss ? '<b style="color:var(--warn)">還沒填 ' + miss + ' 台</b>' : '全部填了 ✔') + '</span></summary><div class="cbody"><table class="tbl">';
+  h += v.hosts.map(function (x) {
+    return '<tr><td>' + esc(x.plant + ' ' + x.host) + '</td><td class="n">' +
+      (x.done ? '✔ ' + esc(x.time) + ' ' + esc(x.by) + (x.status === '停機' ? '（停機）' : '') : '<span style="color:var(--warn)">還沒填</span>') + '</td></tr>';
+  }).join('');
+  return h + '</table></div></details>';
+}
+function viewYarnStock(v) {
+  var types = [];
+  v.items.forEach(function (x) { if (types.indexOf(x.group || x.type) < 0) types.push(x.group || x.type); });
+  var total = v.items.reduce(function (a, x) { return x.pallets ? addQty(a, x.pallets) : a; }, 0);
+  var h = '<details class="cat vsec"><summary><span class="cname">庫存紗（棧板）</span><span class="csum">' +
+    (v.time ? '共 ' + fmt(total) + ' 板' : '還沒盤過') + '</span></summary><div class="cbody">';
+  if (v.time) h += '<p class="hint">最後盤點：' + esc(md(v.time)) + ' ' + esc(v.by) + '</p>';
+  h += '<table class="tbl">' + types.map(function (t) {
+    var list = v.items.filter(function (x) { return (x.group || x.type) === t; });
+    var sum = list.reduce(function (a, x) { return x.pallets ? addQty(a, x.pallets) : a; }, 0);
+    return '<tr class="c"><td>' + esc(t) + '</td><td class="n">' + fmt(sum) + ' 板</td></tr>' + list.filter(function (x) { return x.pallets; }).map(function (x) {
+      return '<tr class="g"><td>' + esc(x.name) + '</td><td class="n">' + fmt(x.pallets) + ' 板</td></tr>'; }).join('');
+  }).join('') + '</table><p class="hint">只列有庫存的規格。</p></div></details>';
+  return h;
 }
 
 /* ================================================================
@@ -1267,9 +1330,19 @@ function demoCall(action, extra) {
       'PE|HDPE 粒': { base: 2600, receipts: 1000, usage: 120, theo: 3480 }, '碳酸鈣|碳酸鈣母料': { base: 1200, receipts: 0, usage: 455, theo: 745 },
       '色母|白色母': { base: 80, receipts: 0, usage: 70, theo: 10 }, '色母|黑色母': { base: 30, receipts: 0, usage: 0, theo: 30 }
     };
+    if (action === 'init' && extra.form === 'view') return ok(Object.assign(base, { form: 'view', name: '示範主管', forms: ['stock', 'receive', 'machine', 'yarn', 'yarnstock'],
+      days: { problems: [], machineTime: '2026-11-03 08:30:00', list: [
+        { category: 'PP', group: 'PP 均聚粒', unit: 'kg', theo: 228.13, counted: true, days: 0, runout: '11/04', lead: 14, short: true, reserve: 0 },
+        { category: 'PE', group: 'HDPE 粒', unit: 'kg', theo: 2410, counted: true, days: 9, runout: '11/13', lead: 10, short: true, reserve: 500 },
+        { category: '色母', group: '白色母', unit: 'kg', theo: 65.6, counted: true, days: 22, runout: '11/26', lead: 7, short: false, reserve: 0 },
+        { category: '碳酸鈣', group: '碳酸鈣粉', unit: 'kg', theo: 0, counted: false, days: null, runout: null, lead: 5, short: false, reserve: 0 }] },
+      yarnToday: { workday: true, hosts: [{ plant: '如興', host: '如2', done: true, time: '07:40', by: '示範課長', status: '運轉' },
+        { plant: '如興', host: '如3', done: false }, { plant: '晶磊', host: '晶1', done: true, time: '07:52', by: '示範課長', status: '停機' }, { plant: '晶磊', host: '晶2', done: false }] },
+      yarnStock: { time: '2026-11-01 16:20:00', by: '示範組長', items: [{ type: '傳統型', name: '規格A', pallets: 3 }, { type: '傳統型', name: '規格B', pallets: 0 },
+        { type: '高速型', name: '規格A', pallets: 2.5 }, { type: '高速型', name: '規格C', pallets: null }] } }));
     if (action === 'init' && extra.form === 'yarnstock') return ok(Object.assign(base, { form: 'yarnstock', name: '示範組長', lastTime: '2026-11-01 16:20:00', lastBy: '示範組長', max: 999,
-      notify: ['陳課長', '林副理'], specs: [{ code: 'T-A', type: '傳統型', name: '規格A', last: 3 }, { code: 'T-B', type: '傳統型', name: '規格B', last: 0 },
-        { code: 'H-A', type: '高速型', name: '規格A', last: null, spot: true }, { code: 'H-C', type: '高速型', name: '規格C', last: null }] }));
+      notify: ['陳課長', '林副理'], specs: [{ code: '311040109202', type: '高速型', group: '刀距 4.0mm', name: '920小', last: 3 }, { code: '311043100141', type: '高速型', group: '刀距 4.3mm', name: '14大', last: 0 },
+        { code: '311043108601', type: '高速型', group: '刀距 4.3mm', name: '860大', last: null, spot: true }, { code: '311065108061', type: '傳統型', group: '刀距 6.5mm', name: '806大', last: null }] }));
     if (action === 'submitYarnStock') return ok({ ok: true, batchId: 'S-DEMO', rows: extra.entries.length, total: extra.entries.reduce(function (a, e) { return addQty(a, e.pallets); }, 0), notified: 2 });
     if (action === 'init' && extra.form === 'machine') ok(Object.assign(base, { form: 'machine', name: '示範班長', lastTime: '2026-11-02 08:05:00', lastBy: '示範班長', specs: [
         { code: 'T-A', type: '傳統型', name: '規格A', perDay: 300, count: 3 }, { code: 'T-B', type: '傳統型', name: '規格B', perDay: 250, count: 2 },
