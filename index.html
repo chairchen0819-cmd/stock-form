@@ -214,8 +214,8 @@ function param(name) {
   return r ? decodeURIComponent(r[1]) : null;
 }
 var DEMO = CONFIG.FORCE_DEMO || param('demo') === '1';
-var FORM = ['machine', 'receive', 'apply', 'yarn', 'yarnstock', 'view'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
-var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌', yarn: '抽紗機數據', yarnstock: '庫存紗盤點', view: '查詢' };
+var FORM = ['machine', 'receive', 'apply', 'yarn', 'yarnstock', 'view', 'denier'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
+var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌', yarn: '抽紗機數據', yarnstock: '庫存紗盤點', view: '查詢', denier: '丹尼回報' };
 document.title = TITLES[FORM];
 document.getElementById('title').textContent = TITLES[FORM];
 
@@ -282,6 +282,7 @@ function start() {
      if (FORM === 'yarn') return renderYarn();
      if (FORM === 'yarnstock') return renderYarnStock();
      if (FORM === 'view') return renderView();
+     if (FORM === 'denier') return renderDenier();
      renderStock();
    })
    .catch(function (e) { renderError(e.message || String(e)); });
@@ -1252,7 +1253,7 @@ function submitYarnStock() {
 /* ================================================================
    七、查詢頁（?form=view）：用看的取代推播，開頁面不耗 LINE 額度；內容依角色由後端決定
    ================================================================ */
-var FORM_NAMES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機', yarn: '抽紗紀錄', yarnstock: '庫存紗盤點', apply: '申報新規格' };
+var FORM_NAMES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機', yarn: '抽紗紀錄', yarnstock: '庫存紗盤點', denier: '丹尼回報', apply: '申報新規格' };
 function renderView() {
   var d = state.data, html = '';
   document.getElementById('meta').textContent = d.name + '・' + d.today + ' 查詢';
@@ -1260,8 +1261,9 @@ function renderView() {
     return '<button type="button" class="chip" data-goto="' + f + '">' + FORM_NAMES[f] + '</button>'; }).join('') + '</div>';
   if (d.days) html += viewDays(d.days);
   if (d.yarnToday) html += viewYarnToday(d.yarnToday);
+  if (d.denier) html += viewDenier(d.denier);
   if (d.yarnStock) html += viewYarnStock(d.yarnStock);
-  if (!d.days && !d.yarnToday && !d.yarnStock) html += '<p class="hint">您的角色沒有可查詢的資料。</p>';
+  if (!d.days && !d.yarnToday && !d.yarnStock && !d.denier) html += '<p class="hint">您的角色沒有可查詢的資料。</p>';
   app.innerHTML = html;
   app.querySelectorAll('[data-goto]').forEach(function (b) { b.onclick = function () { gotoForm(b.dataset.goto); }; });
 }
@@ -1306,6 +1308,82 @@ function viewYarnStock(v) {
   return h;
 }
 
+function viewDenier(v) {
+  var miss = 0;
+  v.slots.forEach(function (sl) { sl.plants.forEach(function (x) { if (!x.done && !(sl.date === v.current.date && sl.shift === v.current.shift)) miss++; }); });
+  var h = '<details class="cat vsec" open><summary><span class="cname">丹尼照片</span><span class="csum">' +
+    (miss ? '<b style="color:var(--warn)">漏拍 ' + miss + ' 班</b>' : '沒有漏拍') + '</span></summary><div class="cbody"><table class="tbl">';
+  v.slots.slice().reverse().forEach(function (sl) {
+    var now = sl.date === v.current.date && sl.shift === v.current.shift;
+    h += '<tr class="c"><td>' + esc(sl.date.slice(5).replace('-', '/') + ' ' + sl.shift) + (now ? '（這班）' : '') + '</td><td class="n"></td></tr>';
+    h += sl.plants.map(function (x) {
+      return '<tr class="g"><td>' + esc(x.plant) + '</td><td class="n">' + (x.done
+        ? '<a href="' + esc(x.link) + '" target="_blank" rel="noopener">看照片</a> ' + esc(x.by) + (x.count > 1 ? '（' + x.count + ' 張）' : '')
+        : '<span style="color:var(--warn)">' + (now ? '還沒拍' : '漏拍') + '</span>') + '</td></tr>';
+    }).join('');
+  });
+  return h + '</table></div></details>';
+}
+
+/* ================================================================
+   八、丹尼回報（?form=denier）：每廠每班拍白板丹尼區一張；照片留檔不辨識，存雲端硬碟格式化命名
+   ================================================================ */
+function renderDenier() {
+  var d = state.data;
+  state.dn = { plant: null, shift: d.shift, photo: null };
+  var firstTodo = d.plants.filter(function (pl) { return !d.done[d.shiftDate + '|' + d.shift + '|' + pl]; })[0];
+  state.dn.plant = firstTodo || d.plants[0];
+  document.getElementById('meta').textContent = d.name + '・每廠每班拍一張白板丹尼區';
+  var html = '<div class="extra" style="margin:0 0 12px"><span class="lbl">廠別</span><div class="ytabs">' + d.plants.map(function (pl) {
+    return '<button type="button" class="chip" data-dplant="' + esc(pl) + '">' + esc(pl) + '</button>'; }).join('') + '</div></div>';
+  html += '<div class="extra" style="margin:0 0 12px"><span class="lbl">班別</span><div class="ytabs">' + d.shifts.map(function (sh) {
+    return '<button type="button" class="chip" data-dshift="' + esc(sh) + '">' + esc(sh) + '</button>'; }).join('') + '</div>' +
+    '<p class="hint" style="margin:6px 0 0">系統已依時間先選好；晚班在隔天早上拍，日期記上班那天。</p></div>';
+  html += '<div class="extra" style="margin:0 0 12px"><label for="ddate" class="lbl">日期（上班那天）</label>' +
+    '<div class="datebar"><input type="date" id="ddate" value="' + d.shiftDate + '" min="' + d.minDate + '" max="' + d.today + '"></div></div>';
+  html += '<div class="extra"><span class="lbl">白板丹尼區照片</span><label class="photo-btn" style="margin-top:6px">📷 拍丹尼區<input type="file" accept="image/*" capture="environment" id="dphoto" hidden></label>' +
+    '<div class="photo-prev" id="dprev"></div><p class="hint">四個黑角都要入鏡、正對板子；只拍丹尼區，不要拍到人。</p></div>';
+  html += '<p class="hint" id="dstat"></p>';
+  app.innerHTML = html;
+  app.addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.dplant) { state.dn.plant = b.dataset.dplant; refreshDenier(); }
+    if (b.dataset.dshift) { state.dn.shift = b.dataset.dshift; refreshDenier(); }
+  });
+  document.getElementById('ddate').addEventListener('input', refreshDenier);
+  document.getElementById('dphoto').addEventListener('change', function (e) {
+    var f = e.target.files && e.target.files[0]; if (!f) return;
+    shrinkPhoto(f, function (data) { state.dn.photo = data; document.getElementById('dprev').innerHTML = '<img alt="已拍照片" src="' + data + '">'; refreshDenier(); });
+  });
+  mountBar('<div class="prog" id="prog"></div><button class="btn primary" id="submit" type="button">送出</button>');
+  document.getElementById('submit').onclick = function () {
+    var dn = state.dn, day = document.getElementById('ddate').value;
+    showDialog('<h3>確認送出？</h3><div>' + esc(dn.plant) + '廠・' + esc(day) + ' ' + esc(dn.shift) + '</div>' +
+      (state.data.done[day + '|' + dn.shift + '|' + dn.plant] ? '<div class="hint">這班已經拍過，會再多存一張（舊的保留）。</div>' : ''), submitDenier);
+  };
+  refreshDenier();
+}
+function refreshDenier() {
+  var d = state.data, dn = state.dn, day = document.getElementById('ddate').value;
+  app.querySelectorAll('[data-dplant]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.dplant === dn.plant)); });
+  app.querySelectorAll('[data-dshift]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.dshift === dn.shift)); });
+  var done = d.done[day + '|' + dn.shift + '|' + dn.plant];
+  document.getElementById('dstat').innerHTML = done ? '這班已由 ' + esc(done.by) + ' 在 ' + esc(done.time) + ' 拍過' + (done.count > 1 ? '（共 ' + done.count + ' 張）' : '') + '，再送會多存一張。' : '這班還沒拍。';
+  var ok = validDate(day) && !!dn.photo;
+  document.getElementById('prog').innerHTML = state.busy ? '送出中…' : !validDate(day) ? '日期要在 ' + md(d.minDate) + '～今天' : !dn.photo ? '還沒拍照' : '<b>' + esc(dn.plant) + ' ' + esc(dn.shift) + '</b> 可以送出';
+  document.getElementById('submit').disabled = state.busy || !ok;
+}
+function submitDenier() {
+  var btn = document.getElementById('submit'), dn = state.dn;
+  state.busy = true; btn.textContent = '送出中…'; refreshDenier();
+  call('submitDenier', { submitId: state.submitId, plant: dn.plant, shift: dn.shift, date: document.getElementById('ddate').value, photo: dn.photo })
+    .then(function (res) {
+      var other = state.data.plants.filter(function (pl) { return pl !== dn.plant; })[0];
+      renderDoneShell('已存檔，謝謝！', '<p>' + esc(res.fileName) + '</p>' + (other ? '<p><button class="btn" type="button" onclick="gotoForm(\'denier\')">接著拍 ' + esc(other) + '廠</button></p>' : ''));
+    })
+    .catch(function (e) { failSubmit(e, btn, refreshDenier); });
+}
+
 /* ================================================================
    示範資料（?demo=1 或 FORCE_DEMO 時使用；不連 LINE 與後端）
    ================================================================ */
@@ -1330,7 +1408,13 @@ function demoCall(action, extra) {
       'PE|HDPE 粒': { base: 2600, receipts: 1000, usage: 120, theo: 3480 }, '碳酸鈣|碳酸鈣母料': { base: 1200, receipts: 0, usage: 455, theo: 745 },
       '色母|白色母': { base: 80, receipts: 0, usage: 70, theo: 10 }, '色母|黑色母': { base: 30, receipts: 0, usage: 0, theo: 30 }
     };
-    if (action === 'init' && extra.form === 'view') return ok(Object.assign(base, { form: 'view', name: '示範主管', forms: ['stock', 'receive', 'machine', 'yarn', 'yarnstock'],
+    if (action === 'init' && extra.form === 'denier') return ok(Object.assign(base, { form: 'denier', name: '示範組長', plants: ['如興', '晶磊'], shifts: ['早班', '晚班'],
+      shift: '早班', shiftDate: base.today, done: (function () { var o = {}; o[base.today + '|早班|如興'] = { by: '示範組長', time: '11-03 15:20', count: 1 }; return o; })() }));
+    if (action === 'submitDenier') return ok({ ok: true, fileName: '丹尼_' + extra.plant + '_' + extra.date.replace(/-/g, '') + '_' + extra.shift + '.jpg', url: '#' });
+    if (action === 'init' && extra.form === 'view') return ok(Object.assign(base, { form: 'view', name: '示範主管', forms: ['stock', 'receive', 'machine', 'yarn', 'yarnstock', 'denier'],
+      denier: { current: { date: base.today, shift: '早班' }, slots: [{ date: '2026-11-02', shift: '早班', plants: [{ plant: '如興', done: true, by: '示範組長', link: '#', count: 1 }, { plant: '晶磊', done: false }] },
+        { date: '2026-11-02', shift: '晚班', plants: [{ plant: '如興', done: true, by: '示範組長', link: '#', count: 2 }, { plant: '晶磊', done: true, by: '示範組長', link: '#', count: 1 }] },
+        { date: base.today, shift: '早班', plants: [{ plant: '如興', done: true, by: '示範組長', link: '#', count: 1 }, { plant: '晶磊', done: false }] }] },
       days: { problems: [], machineTime: '2026-11-03 08:30:00', list: [
         { category: 'PP', group: 'PP 均聚粒', unit: 'kg', theo: 228.13, counted: true, days: 0, runout: '11/04', lead: 14, short: true, reserve: 0 },
         { category: 'PE', group: 'HDPE 粒', unit: 'kg', theo: 2410, counted: true, days: 9, runout: '11/13', lead: 10, short: true, reserve: 500 },
