@@ -129,6 +129,27 @@
   .dlg .vreason { width: 100%; min-height: 44px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--bg); padding: 8px 10px; }
   .applink { background: none; border: 0; color: var(--accent); font-weight: 600; padding: 8px 0; text-decoration: underline; }
 
+  /* 抽紗機數據 */
+  .ytabs { display: flex; gap: 8px; margin: 0 0 12px; }
+  .ytabs .chip { flex: 1; min-height: 46px; font-size: 17px; }
+  .ygrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 12px; }
+  .yf { display: block; min-width: 0; }
+  .yf .yl { display: block; font-size: 13px; color: var(--muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .yf .qty { width: 100%; max-width: none; min-height: 44px; }
+  .yf .qty input { font-size: 18px; }
+  .yf.warn .qty { border-color: var(--warn); background: var(--warn-soft); }
+  .yf.bad .qty { border-color: var(--low); background: var(--low-soft); }
+  .yf .yw { display: block; font-size: 12px; color: var(--warn); min-height: 0; }
+  .yf.bad .yw { color: var(--low); }
+  .ysec { padding: 8px 12px 0; font-weight: 700; border-top: 1px solid var(--line); }
+  .ysec:first-child { border-top: 0; }
+  .ysts { display: flex; gap: 8px; padding: 10px 12px; }
+  .ysts .chip { flex: 1; }
+  .ysel { width: 100%; min-height: 44px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--bg); padding: 0 8px; font-size: 16px; }
+  .ysame { margin: 0 12px 4px; }
+  .badge.done { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .badge.todo { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+
   .bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--card);
          border-top: 1px solid var(--line); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
   .bar .in { max-width: 560px; margin: 0 auto; display: flex; gap: 10px; align-items: center; }
@@ -187,8 +208,8 @@ function param(name) {
   return r ? decodeURIComponent(r[1]) : null;
 }
 var DEMO = CONFIG.FORCE_DEMO || param('demo') === '1';
-var FORM = ['machine', 'receive', 'apply'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
-var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌' };
+var FORM = ['machine', 'receive', 'apply', 'yarn'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
+var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌', yarn: '抽紗機數據' };
 document.title = TITLES[FORM];
 document.getElementById('title').textContent = TITLES[FORM];
 
@@ -252,6 +273,7 @@ function start() {
      if (FORM === 'machine') return renderMachine();
      if (FORM === 'receive') return renderReceive();
      if (FORM === 'apply') return renderApply();
+     if (FORM === 'yarn') return renderYarn();
      renderStock();
    })
    .catch(function (e) { renderError(e.message || String(e)); });
@@ -928,6 +950,189 @@ function openApplyConfirm() {
 }
 
 /* ================================================================
+   五、抽紗機數據（每天一次、一廠送一次；數字預填上次的值，只改有變的）
+   ================================================================ */
+function yParse(s) {
+  s = String(s == null ? '' : s).replace(/,/g, '').trim();
+  if (s === '' || !/^-?\d+(\.\d+)?$/.test(s)) return null;
+  return Number(s);
+}
+function yHosts() { var d = state.data; return d.plants.filter(function (p) { return p.plant === state.y.plant; })[0].hosts; }
+/* 某台主機在表單上的欄位清單：[{key, field, line, label, last}] */
+function yFieldsOf(h) {
+  var d = state.data, out = [];
+  d.hostFields.forEach(function (f, i) {
+    if (i < d.tempMax && i >= h.temps) return;
+    out.push({ key: h.host + '||' + f, field: f, line: '', last: h.last ? h.last.values[f] : null });
+  });
+  h.lines.forEach(function (l) {
+    d.lineFields.forEach(function (f) { out.push({ key: h.host + '|' + l.line + '|' + f, field: f, line: l.line, last: l.last ? l.last[f] : null }); });
+  });
+  return out;
+}
+/* 套用上次的值（全部欄位＋規格、丹尼數） */
+function yFillLast(h) {
+  var st = state.y.hosts[h.host];
+  if (h.last) { st.specCode = h.last.specCode; st.denier = h.last.denier == null ? '' : String(h.last.denier); }
+  yFieldsOf(h).forEach(function (x) { st.v[x.key] = x.last == null || x.last === '' ? '' : String(x.last); });
+}
+function yInit(plant) {
+  state.y = { plant: plant, room: '', hum: '', hosts: {} };
+  yHosts().forEach(function (h) {
+    state.y.hosts[h.host] = { status: h.last || !h.today ? '運轉' : (h.today.status || '運轉'), specCode: '', denier: '', note: '', v: {} };
+    yFillLast(h);
+  });
+}
+/* 單一欄位檢查：bad＝超出上限或沒填（擋送出）；warn＝跟上次差很多（只提醒） */
+function yCheck(field, raw, last) {
+  var d = state.data, n = yParse(raw), lim = d.limits[field];
+  if (n == null) return { bad: true, msg: raw === '' ? '要填' : '不是數字' };
+  if (lim && (n < lim[0] || n > lim[1])) return { bad: true, msg: '要在 ' + lim[0] + '～' + lim[1] };
+  if (last != null && last !== '' && Number(last) !== 0 && Math.abs(n - Number(last)) / Math.abs(Number(last)) > d.warnRatio) return { warn: true, msg: '上次 ' + fmt(last) };
+  return {};
+}
+function yInput(key, field, label, raw, last, mode) {
+  return '<label class="yf" data-yf="' + esc(key) + '"><span class="yl">' + esc(label) + '</span><span class="qty"><input inputmode="' + (mode || 'decimal') +
+    '" autocomplete="off" aria-label="' + esc(label) + '" data-ykey="' + esc(key) + '" value="' + esc(raw) + '"></span><span class="yw"></span></label>';
+}
+function yShort(f) { return f.replace('溫度表', '溫度表 ').replace('m/min', ' m/分'); }
+function renderYarn() {
+  var d = state.data;
+  if (!state.y) {
+    var firstTodo = d.plants.filter(function (p) { return p.hosts.some(function (h) { return !h.today; }); })[0];
+    yInit((firstTodo || d.plants[0]).plant);
+  }
+  document.getElementById('meta').textContent = d.name + '・每天一次，一廠送一次；數字已帶上次的值，只改有變的';
+  var html = '<div class="ytabs">' + d.plants.map(function (p) {
+    var done = p.hosts.every(function (h) { return h.today; });
+    return '<button type="button" class="chip" data-yplant="' + esc(p.plant) + '" aria-pressed="' + (p.plant === state.y.plant) + '">' + esc(p.plant) + (done ? ' ✔' : '') + '</button>';
+  }).join('') + '</div>';
+  html += dateBar('ydate', '紀錄日');
+  html += '<div class="grp"><div class="grp-head"><span class="gname">' + esc(state.y.plant) + '廠 環境</span><span class="hint">每廠記一次</span></div><div class="ygrid">' +
+    yInput('room', '室溫℃', '室溫 ℃', state.y.room, null) + yInput('hum', '濕度%', '濕度 %', state.y.hum, null) + '</div></div>';
+  yHosts().forEach(function (h, hi) {
+    var st = state.y.hosts[h.host];
+    var badge = h.today ? '<span class="badge done">今天已填 ' + esc(h.today.time) + '</span>' : '<span class="badge todo">今天未填</span>';
+    html += '<details class="cat" data-yhost="' + esc(h.host) + '"' + (hi === 0 ? ' open' : '') + '><summary><span class="cname">' + esc(h.host) + '</span>' + badge +
+      '<span class="csum" id="ysum' + hi + '"></span></summary><div class="cbody" style="padding:0">';
+    html += '<div class="ysts"><button type="button" class="chip" data-ysts="運轉" data-yh="' + esc(h.host) + '">運轉</button><button type="button" class="chip" data-ysts="停機" data-yh="' + esc(h.host) + '">今天停機</button></div>';
+    html += '<div class="yrun" id="yrun' + hi + '">';
+    if (h.last) html += '<p class="hint ysame">上次：' + esc(h.last.date) + ' ' + esc(h.last.by) + '　<button type="button" class="applink" data-ysame="' + esc(h.host) + '">全部改回上次的值</button></p>';
+    else html += '<p class="hint ysame">這台還沒有紀錄，請全部填寫。</p>';
+    html += '<div class="ygrid"><label class="yf" style="grid-column:1/-1"><span class="yl">紗種規格</span><select class="ysel" data-yspec="' + esc(h.host) + '"><option value="">請選擇</option>' +
+      d.specs.map(function (sp) { return '<option value="' + esc(sp.code) + '"' + (sp.code === st.specCode ? ' selected' : '') + '>' + esc(sp.type + ' ' + sp.name) + '</option>'; }).join('') +
+      '</select></label>' + yInput(h.host + '||丹尼數D', '丹尼數D', '丹尼數 D（實測）', st.denier, h.last ? h.last.denier : null) + '</div>';
+    html += '<div class="ysec">主機（' + (h.lines.length > 1 ? '兩條線共用' : '押出') + '）</div><div class="ygrid">';
+    yFieldsOf(h).filter(function (x) { return !x.line; }).forEach(function (x) { html += yInput(x.key, x.field, yShort(x.field), st.v[x.key], x.last); });
+    html += '</div>';
+    h.lines.forEach(function (l) {
+      html += '<div class="ysec">延伸段 ' + esc(l.line) + '</div><div class="ygrid">';
+      yFieldsOf(h).filter(function (x) { return x.line === l.line; }).forEach(function (x) { html += yInput(x.key, x.field, yShort(x.field), st.v[x.key], x.last); });
+      html += '</div>';
+    });
+    html += '<div class="ygrid"><label class="yf" style="grid-column:1/-1"><span class="yl">備註（選填）</span><input class="ysel" maxlength="200" data-ynote="' + esc(h.host) + '" value="' + esc(st.note) + '"></label></div>';
+    html += '</div></div></details>';
+  });
+  app.innerHTML = html;
+  accordion(app);
+  if (!state.yWired) {
+    state.yWired = true;
+    app.addEventListener('input', function (e) {
+      var t = e.target, y = state.y;
+      if (t.dataset.ykey) {
+        var k = t.dataset.ykey, p = k.split('|');
+        if (k === 'room') y.room = t.value; else if (k === 'hum') y.hum = t.value;
+        else if (p[2] === '丹尼數D') y.hosts[p[0]].denier = t.value;
+        else y.hosts[p[0]].v[k] = t.value;
+        y.dirty = true; refreshYarn();
+      } else if (t.dataset.ynote) { y.hosts[t.dataset.ynote].note = t.value; y.dirty = true; }
+    });
+    app.addEventListener('change', function (e) {
+      var t = e.target;
+      if (t.dataset.yspec) { state.y.hosts[t.dataset.yspec].specCode = t.value; state.y.dirty = true; refreshYarn(); }
+    });
+    app.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.yplant && b.dataset.yplant !== state.y.plant) {
+        if (state.y.dirty && !confirm('這一廠填的還沒送出，切換會清掉。確定切換？')) return;
+        yInit(b.dataset.yplant); renderYarn();
+      } else if (b.dataset.ysts) { state.y.hosts[b.dataset.yh].status = b.dataset.ysts; state.y.dirty = true; refreshYarn(); }
+      else if (b.dataset.ysame) {
+        var h = yHosts().filter(function (x) { return x.host === b.dataset.ysame; })[0];
+        yFillLast(h); renderYarn();
+      }
+    });
+    mountBar('<div class="prog" id="prog"></div><button class="btn primary" id="submit" type="button">送出</button>');
+    document.getElementById('submit').onclick = openYarnConfirm;
+  }
+  wireDate('ydate', refreshYarn);
+}
+/* 檢查全部欄位、更新畫面標示；回傳 { bad: [...], warn: [...] } */
+function yValidate() {
+  var y = state.y, res = { bad: [], warn: [] };
+  var mark = function (key, c, label) {
+    var el = app.querySelector('[data-yf="' + key.replace(/"/g, '\\"') + '"]');
+    if (el) { el.classList.toggle('bad', !!c.bad); el.classList.toggle('warn', !!c.warn); el.querySelector('.yw').textContent = c.msg || ''; }
+    if (c.bad) res.bad.push(label + '：' + c.msg); else if (c.warn) res.warn.push(label + '（' + c.msg + '）');
+  };
+  mark('room', yCheck('室溫℃', y.room, null), y.plant + ' 室溫');
+  mark('hum', yCheck('濕度%', y.hum, null), y.plant + ' 濕度');
+  yHosts().forEach(function (h, hi) {
+    var st = y.hosts[h.host], run = st.status === '運轉';
+    var box = document.getElementById('yrun' + hi); if (box) box.style.display = run ? '' : 'none';
+    app.querySelectorAll('[data-yh="' + h.host + '"]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.ysts === st.status)); });
+    var nb = res.bad.length, nw = res.warn.length;
+    if (run) {
+      if (!st.specCode) res.bad.push(h.host + ' 紗種規格：要選');
+      mark(h.host + '||丹尼數D', yCheck('丹尼數D', st.denier, h.last ? h.last.denier : null), h.host + ' 丹尼數');
+      yFieldsOf(h).forEach(function (x) { mark(x.key, yCheck(x.field, st.v[x.key], x.last), (x.line || h.host) + ' ' + yShort(x.field)); });
+    }
+    var sum = document.getElementById('ysum' + hi);
+    if (sum) sum.innerHTML = !run ? '停機' : res.bad.length > nb ? '<b style="color:var(--low)">' + (res.bad.length - nb) + ' 格要修</b>'
+      : res.warn.length > nw ? '<b style="color:var(--warn)">' + (res.warn.length - nw) + ' 格請確認</b>' : '可送出';
+  });
+  return res;
+}
+function refreshYarn() {
+  var r = yValidate(), btn = document.getElementById('submit');
+  var dv = document.getElementById('ydate').value;
+  document.getElementById('prog').innerHTML = state.busy ? '送出中…' : !validDate(dv) ? '紀錄日要在 ' + md(state.data.minDate) + '～今天'
+    : r.bad.length ? '還有 <b>' + r.bad.length + '</b> 格要修' : '<b>' + esc(state.y.plant) + '</b> 可以送出' + (r.warn.length ? '（' + r.warn.length + ' 格跟上次差很多）' : '');
+  btn.disabled = state.busy || r.bad.length > 0 || !validDate(dv);
+}
+function openYarnConfirm() {
+  var r = yValidate(); if (r.bad.length) return;
+  var hosts = yHosts(), y = state.y;
+  var run = hosts.filter(function (h) { return y.hosts[h.host].status === '運轉'; }).map(function (h) { return h.host; });
+  var stop = hosts.filter(function (h) { return y.hosts[h.host].status === '停機'; }).map(function (h) { return h.host; });
+  var again = hosts.filter(function (h) { return h.today; }).length;
+  var html = '<h3>確認送出？</h3><div>' + esc(y.plant) + '廠・紀錄日 ' + esc(document.getElementById('ydate').value) + '</div><ul>' +
+    '<li>運轉：' + (run.length ? esc(run.join('、')) : '無') + '</li><li>停機：' + (stop.length ? esc(stop.join('、')) : '無') + '</li></ul>';
+  if (again) html += '<div class="hint">今天已填過，再送一次以這次為準（舊的保留）。</div>';
+  if (r.warn.length) html += '<div class="sec" style="color:var(--warn)">跟上次差很多（請再看一眼）</div><ul>' + r.warn.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul>';
+  showDialog(html, submitYarn);
+}
+function submitYarn() {
+  var y = state.y, btn = document.getElementById('submit');
+  state.busy = true; btn.textContent = '送出中…'; refreshYarn();
+  var hosts = yHosts().map(function (h) {
+    var st = y.hosts[h.host];
+    if (st.status !== '運轉') return { host: h.host, status: '停機', note: st.note };
+    var values = {};
+    yFieldsOf(h).filter(function (x) { return !x.line; }).forEach(function (x) { values[x.field] = yParse(st.v[x.key]); });
+    return { host: h.host, status: '運轉', specCode: st.specCode, denier: yParse(st.denier), note: st.note, values: values,
+      lines: h.lines.map(function (l) { var v = {}; yFieldsOf(h).filter(function (x) { return x.line === l.line; }).forEach(function (x) { v[x.field] = yParse(st.v[x.key]); }); return { line: l.line, values: v }; }) };
+  });
+  call('submitYarn', { submitId: state.submitId, date: document.getElementById('ydate').value, plant: y.plant, roomTemp: yParse(y.room), humidity: yParse(y.hum), hosts: hosts })
+    .then(function (res) {
+      var other = state.data.plants.filter(function (p) { return p.plant !== y.plant && p.hosts.some(function (h) { return !h.today; }); })[0];
+      renderDoneShell('已記錄 ' + esc(y.plant) + '廠', '<p>共 ' + res.rows + ' 條延伸線。</p>' +
+        (other ? '<p><button class="btn" type="button" onclick="gotoForm(\'yarn\')">接著填 ' + esc(other.plant) + '廠</button></p>' : ''));
+    })
+    .catch(function (e) { failSubmit(e, btn, refreshYarn); });
+}
+
+/* ================================================================
    示範資料（?demo=1 或 FORCE_DEMO 時使用；不連 LINE 與後端）
    ================================================================ */
 function demoCall(action, extra) {
@@ -964,6 +1169,25 @@ function demoCall(action, extra) {
         { batchId: 'DEMO-R0', date: '2026-10-30', time: '2026-10-30 14:20:00', voided: false, voidable: false,
           blockReason: 'PP 在 11/02 09:30 已盤點過，庫存已用實盤校正，不需要作廢（作廢反而會少算）', lines: [{ name: 'PP 均聚粒／廠牌B', qty: 2000, unit: 'kg' }] }] }));
     else if (action === 'voidReceipt') ok({ ok: true, batchId: extra.batchId });
+    else if (action === 'init' && extra.form === 'yarn') {
+      var hf = [], lf = ['電熱1℃', '電熱2℃', '捲取輪線速度m/min', '延伸倍率', '延伸輪線速度m/min', '快輪變頻器Hz'], lim = {};
+      for (var ti = 1; ti <= 13; ti++) { hf.push('溫度表' + ti + '℃'); lim['溫度表' + ti + '℃'] = [0, 400]; }
+      hf = hf.concat(['主機轉速rpm', '水溫℃', '投料變頻器Hz', '慢輪變頻器Hz']);
+      Object.assign(lim, { '室溫℃': [-10, 60], '濕度%': [0, 100], '丹尼數D': [1, 100000], '主機轉速rpm': [0, 3000], '水溫℃': [0, 100], '投料變頻器Hz': [0, 100],
+        '慢輪變頻器Hz': [0, 100], '快輪變頻器Hz': [0, 100], '電熱1℃': [0, 400], '電熱2℃': [0, 400], '捲取輪線速度m/min': [0, 1000], '延伸輪線速度m/min': [0, 1000], '延伸倍率': [0, 20] });
+      var hv = function (b) { var o = {}; hf.forEach(function (f, i) { o[f] = i < 13 ? b + i * 5 : { '主機轉速rpm': 85, '水溫℃': 30, '投料變頻器Hz': 40.5, '慢輪變頻器Hz': 30.2 }[f]; }); return o; };
+      var lv = function (b) { return { '電熱1℃': 180 + b, '電熱2℃': 185 + b, '捲取輪線速度m/min': 30.5, '延伸倍率': 6.2, '延伸輪線速度m/min': 189.1, '快輪變頻器Hz': 45.5 }; };
+      var lastH = function (b) { return { date: '2026-11-02', by: '示範課長', specCode: 'H-A', denier: 1650, values: hv(b) }; };
+      ok(Object.assign(base, { form: 'yarn', name: '示範課長', hostFields: hf, lineFields: lf, limits: lim, warnRatio: 0.2, tempMax: 13,
+        specs: [{ code: 'T-A', type: '傳統型', name: '規格A' }, { code: 'T-B', type: '傳統型', name: '規格B' }, { code: 'H-A', type: '高速型', name: '規格A' }],
+        plants: [
+          { plant: '如興', hosts: [{ host: '如2', temps: 13, last: lastH(200), today: null, lines: [{ line: '如2-1', last: lv(0) }, { line: '如2-2', last: lv(2) }] },
+                                   { host: '如3', temps: 13, last: lastH(210), today: null, lines: [{ line: '如3-1', last: lv(1) }, { line: '如3-2', last: lv(3) }] }] },
+          { plant: '晶磊', hosts: [{ host: '晶1', temps: 13, last: lastH(205), today: { time: '07:12', by: '示範課長', status: '運轉' }, lines: [{ line: '晶1', last: lv(0) }] },
+                                   { host: '晶2', temps: 13, last: null, today: null, lines: [{ line: '晶2', last: null }] }] }] }));
+    }
+    else if (action === 'submitYarn') ok({ ok: true, batchId: 'DEMO-Y' + Date.now().toString().slice(-6),
+      rows: extra.hosts.reduce(function (a, h) { return a + (h.lines ? h.lines.length : (h.host.indexOf('晶') === 0 ? 1 : 2)); }, 0) });
     else if (action === 'init' && extra.form === 'apply') {
       var groups = [], gi = {};
       items.forEach(function (it) { var k = it.category + '|' + it.group;
