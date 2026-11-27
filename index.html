@@ -149,6 +149,8 @@
   .ysame { margin: 0 12px 4px; }
   .badge.done { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .badge.todo { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+  .yf.spot .qty { border-style: dashed; border-color: var(--accent); }
+  .yspot { margin: 8px 12px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 14px; }
 
   .bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--card);
          border-top: 1px solid var(--line); padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
@@ -471,18 +473,23 @@ function refreshStock() {
 }
 
 /* 照片：縮到長邊 1280px、JPEG 品質 0.75，降低上傳量 */
-function onPhoto(e) {
-  var file = e.target.files && e.target.files[0]; if (!file) return;
+function shrinkPhoto(file, done) {
   var img = new Image(), url = URL.createObjectURL(file);
   img.onload = function () {
     var s = Math.min(1, 1280 / Math.max(img.width, img.height));
     var c = document.createElement('canvas'); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
     c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    state.photo = c.toDataURL('image/jpeg', 0.75); URL.revokeObjectURL(url);
-    document.getElementById('photoPrev').innerHTML = '<img alt="已選照片" src="' + state.photo + '"><button class="link" id="rmPhoto" type="button">移除</button>';
+    URL.revokeObjectURL(url); done(c.toDataURL('image/jpeg', 0.75));
   };
   img.onerror = function () { alert('這張照片讀不到，請換一張'); };
   img.src = url;
+}
+function onPhoto(e) {
+  var file = e.target.files && e.target.files[0]; if (!file) return;
+  shrinkPhoto(file, function (data) {
+    state.photo = data;
+    document.getElementById('photoPrev').innerHTML = '<img alt="已選照片" src="' + state.photo + '"><button class="link" id="rmPhoto" type="button">移除</button>';
+  });
 }
 
 function totalsTable(t) {
@@ -962,12 +969,13 @@ function yHosts() { var d = state.data; return d.plants.filter(function (p) { re
 /* 某台主機在表單上的欄位清單：[{key, field, line, label, last}] */
 function yFieldsOf(h) {
   var d = state.data, out = [];
+  var isSpot = function (line, f) { return !!h.spot && h.spot.fields.some(function (x) { return x.line === line && x.field === f; }); };
   d.hostFields.forEach(function (f, i) {
     if (i < d.tempMax && i >= h.temps) return;
-    out.push({ key: h.host + '||' + f, field: f, line: '', last: h.last ? h.last.values[f] : null });
+    var sp = isSpot('', f); out.push({ key: h.host + '||' + f, field: f, line: '', last: h.last && !sp ? h.last.values[f] : null, spot: sp });
   });
   h.lines.forEach(function (l) {
-    d.lineFields.forEach(function (f) { out.push({ key: h.host + '|' + l.line + '|' + f, field: f, line: l.line, last: l.last ? l.last[f] : null }); });
+    d.lineFields.forEach(function (f) { var sp = isSpot(l.line, f); out.push({ key: h.host + '|' + l.line + '|' + f, field: f, line: l.line, last: l.last && !sp ? l.last[f] : null, spot: sp }); });
   });
   return out;
 }
@@ -975,12 +983,12 @@ function yFieldsOf(h) {
 function yFillLast(h) {
   var st = state.y.hosts[h.host];
   if (h.last) { st.specCode = h.last.specCode; st.denier = h.last.denier == null ? '' : String(h.last.denier); }
-  yFieldsOf(h).forEach(function (x) { st.v[x.key] = x.last == null || x.last === '' ? '' : String(x.last); });
+  yFieldsOf(h).forEach(function (x) { if (x.spot && st.v[x.key] !== undefined) return; st.v[x.key] = x.last == null || x.last === '' ? '' : String(x.last); }); // 抽查格不覆蓋已打的值
 }
 function yInit(plant) {
   state.y = { plant: plant, room: '', hum: '', hosts: {} };
   yHosts().forEach(function (h) {
-    state.y.hosts[h.host] = { status: h.last || !h.today ? '運轉' : (h.today.status || '運轉'), specCode: '', denier: '', note: '', v: {} };
+    state.y.hosts[h.host] = { status: h.last || !h.today ? '運轉' : (h.today.status || '運轉'), specCode: '', denier: '', note: '', v: {}, photo: null };
     yFillLast(h);
   });
 }
@@ -992,8 +1000,9 @@ function yCheck(field, raw, last) {
   if (last != null && last !== '' && Number(last) !== 0 && Math.abs(n - Number(last)) / Math.abs(Number(last)) > d.warnRatio) return { warn: true, msg: '上次 ' + fmt(last) };
   return {};
 }
-function yInput(key, field, label, raw, last, mode) {
-  return '<label class="yf" data-yf="' + esc(key) + '"><span class="yl">' + esc(label) + '</span><span class="qty"><input inputmode="' + (mode || 'decimal') +
+function yInput(key, field, label, raw, last, mode, spot) {
+  if (spot) label = '🔍 ' + label;
+  return '<label class="yf' + (spot ? ' spot' : '') + '" data-yf="' + esc(key) + '"><span class="yl">' + esc(label) + '</span><span class="qty"><input inputmode="' + (mode || 'decimal') +
     '" autocomplete="off" aria-label="' + esc(label) + '" data-ykey="' + esc(key) + '" value="' + esc(raw) + '"></span><span class="yw"></span></label>';
 }
 function yShort(f) { return f.replace('溫度表', '溫度表 ').replace('m/min', ' m/分'); }
@@ -1013,22 +1022,26 @@ function renderYarn() {
     yInput('room', '室溫℃', '室溫 ℃', state.y.room, null) + yInput('hum', '濕度%', '濕度 %', state.y.hum, null) + '</div></div>';
   yHosts().forEach(function (h, hi) {
     var st = state.y.hosts[h.host];
-    var badge = h.today ? '<span class="badge done">今天已填 ' + esc(h.today.time) + '</span>' : '<span class="badge todo">今天未填</span>';
+    var badge = (h.today ? '<span class="badge done">今天已填 ' + esc(h.today.time) + '</span>' : '<span class="badge todo">今天未填</span>') +
+      (h.spot ? ' <span class="badge todo">🔍 抽查</span>' : '');
     html += '<details class="cat" data-yhost="' + esc(h.host) + '"' + (hi === 0 ? ' open' : '') + '><summary><span class="cname">' + esc(h.host) + (h.type ? ' <small class="hint">' + esc(h.type) + '</small>' : '') + '</span>' + badge +
       '<span class="csum" id="ysum' + hi + '"></span></summary><div class="cbody" style="padding:0">';
     html += '<div class="ysts"><button type="button" class="chip" data-ysts="運轉" data-yh="' + esc(h.host) + '">運轉</button><button type="button" class="chip" data-ysts="停機" data-yh="' + esc(h.host) + '">今天停機</button></div>';
     html += '<div class="yrun" id="yrun' + hi + '">';
+    if (h.spot) html += '<div class="yspot">🔍 <b>今天抽查這台</b>：標 🔍 的 ' + h.spot.fields.length + ' 格沒有帶上次的值，請看儀表重打。' +
+      (h.spot.photo ? '<br>另外要拍<b>控制面板照片</b>：<label class="photo-btn" style="margin-top:6px">📷 拍控制面板<input type="file" accept="image/*" capture="environment" data-yphoto="' + esc(h.host) + '" hidden></label>' +
+        '<div class="photo-prev" id="yprev' + hi + '">' + (st.photo ? '<img alt="已拍照片" src="' + st.photo + '">' : '') + '</div>' : '') + '</div>';
     if (h.last) html += '<p class="hint ysame">上次：' + esc(h.last.date) + ' ' + esc(h.last.by) + '　<button type="button" class="applink" data-ysame="' + esc(h.host) + '">全部改回上次的值</button></p>';
     else html += '<p class="hint ysame">這台還沒有紀錄，請全部填寫。</p>';
     html += '<div class="ygrid"><label class="yf" style="grid-column:1/-1"><span class="yl">紗種規格' + (h.type ? '（' + esc(h.type) + '）' : '') + '</span><select class="ysel" data-yspec="' + esc(h.host) + '"><option value="">請選擇</option>' +
       d.specs.filter(function (sp) { return !h.type || sp.type === h.type; }).map(function (sp) { return '<option value="' + esc(sp.code) + '"' + (sp.code === st.specCode ? ' selected' : '') + '>' + esc(sp.name) + '</option>'; }).join('') +
       '</select></label>' + yInput(h.host + '||丹尼數D', '丹尼數D', '丹尼數 D（實測）', st.denier, h.last ? h.last.denier : null) + '</div>';
     html += '<div class="ysec">主機（' + (h.lines.length > 1 ? '兩條線共用' : '押出') + '）</div><div class="ygrid">';
-    yFieldsOf(h).filter(function (x) { return !x.line; }).forEach(function (x) { html += yInput(x.key, x.field, yShort(x.field), st.v[x.key], x.last); });
+    yFieldsOf(h).filter(function (x) { return !x.line; }).forEach(function (x) { html += yInput(x.key, x.field, yShort(x.field), st.v[x.key], x.last, null, x.spot); });
     html += '</div>';
     h.lines.forEach(function (l) {
       html += '<div class="ysec">延伸段 ' + esc(l.line) + '</div><div class="ygrid">';
-      yFieldsOf(h).filter(function (x) { return x.line === l.line; }).forEach(function (x) { html += yInput(x.key, x.field, yShort(x.field), st.v[x.key], x.last); });
+      yFieldsOf(h).filter(function (x) { return x.line === l.line; }).forEach(function (x) { html += yInput(x.key, x.field, yShort(x.field), st.v[x.key], x.last, null, x.spot); });
       html += '</div>';
     });
     html += '<div class="ygrid"><label class="yf" style="grid-column:1/-1"><span class="yl">備註（選填）</span><input class="ysel" maxlength="200" data-ynote="' + esc(h.host) + '" value="' + esc(st.note) + '"></label></div>';
@@ -1051,6 +1064,10 @@ function renderYarn() {
     app.addEventListener('change', function (e) {
       var t = e.target;
       if (t.dataset.yspec) { state.y.hosts[t.dataset.yspec].specCode = t.value; state.y.dirty = true; refreshYarn(); }
+      if (t.dataset.yphoto && t.files && t.files[0]) {
+        var host = t.dataset.yphoto, prev = t.closest('.yspot').querySelector('.photo-prev');
+        shrinkPhoto(t.files[0], function (data) { state.y.hosts[host].photo = data; state.y.dirty = true; prev.innerHTML = '<img alt="已拍照片" src="' + data + '">'; refreshYarn(); });
+      }
     });
     app.addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
@@ -1085,6 +1102,7 @@ function yValidate() {
     var nb = res.bad.length, nw = res.warn.length;
     if (run) {
       if (!st.specCode) res.bad.push(h.host + ' 紗種規格：要選');
+      if (h.spot && h.spot.photo && !st.photo) res.bad.push(h.host + ' 控制面板照片：要拍');
       mark(h.host + '||丹尼數D', yCheck('丹尼數D', st.denier, h.last ? h.last.denier : null), h.host + ' 丹尼數');
       yFieldsOf(h).forEach(function (x) { mark(x.key, yCheck(x.field, st.v[x.key], x.last), (x.line || h.host) + ' ' + yShort(x.field)); });
     }
@@ -1121,7 +1139,7 @@ function submitYarn() {
     if (st.status !== '運轉') return { host: h.host, status: '停機', note: st.note };
     var values = {};
     yFieldsOf(h).filter(function (x) { return !x.line; }).forEach(function (x) { values[x.field] = yParse(st.v[x.key]); });
-    return { host: h.host, status: '運轉', specCode: st.specCode, denier: yParse(st.denier), note: st.note, values: values,
+    return { host: h.host, status: '運轉', specCode: st.specCode, denier: yParse(st.denier), note: st.note, values: values, photo: h.spot && h.spot.photo ? st.photo : null,
       lines: h.lines.map(function (l) { var v = {}; yFieldsOf(h).filter(function (x) { return x.line === l.line; }).forEach(function (x) { v[x.field] = yParse(st.v[x.key]); }); return { line: l.line, values: v }; }) };
   });
   call('submitYarn', { submitId: state.submitId, date: document.getElementById('ydate').value, plant: y.plant, roomTemp: yParse(y.room), humidity: yParse(y.hum), hosts: hosts })
@@ -1155,16 +1173,18 @@ function renderYarnStock() {
   document.getElementById('meta').textContent = d.name + (d.lastTime ? '・上次 ' + md(d.lastTime) + ' ' + d.lastBy : '・第一次盤點');
   var html = dateBar('sdate', '盤點日');
   html += '<p class="hint" style="margin:0 0 10px">' + (d.lastTime ? '棧板數已帶上次的值，<b>只改有變的</b>；' : '') + '每個規格都要填，沒有庫存填 0；不滿一板可填 0.5。</p>';
+  var nSpot = d.specs.filter(function (sp) { return sp.spot; }).length;
+  if (nSpot) html += '<div class="yspot" style="margin:0 0 10px">🔍 <b>今天抽查 ' + nSpot + ' 個規格</b>：標 🔍 的沒有帶上次的值，請到倉庫實際點數。</div>';
   sTypes().forEach(function (type, ti) {
     var list = d.specs.filter(function (sp) { return sp.type === type; });
     html += '<details class="cat"' + (ti === 0 ? ' open' : '') + '><summary><span class="cname">' + esc(type) + '</span><span class="csum" id="ss' + ti + '"></span></summary><div class="cbody">';
     list.forEach(function (sp) {
-      html += '<div class="row"><div class="lab"><div class="bn">' + esc(sp.name) + '</div><div class="sub" id="ssub-' + esc(sp.code) + '"></div></div>' +
+      html += '<div class="row"><div class="lab"><div class="bn">' + (sp.spot ? '🔍 ' : '') + esc(sp.name) + '</div><div class="sub" id="ssub-' + esc(sp.code) + '"></div></div>' +
         '<label class="qty"><input inputmode="decimal" autocomplete="off" aria-label="' + esc(sp.name) + ' 棧板數" data-scode="' + esc(sp.code) + '" value="' + esc(state.s[sp.code]) + '" placeholder="輸入"><span class="unit">板</span></label></div>';
     });
     html += '</div></details>';
   });
-  html += '<p style="margin:10px 0"><button type="button" class="applink" id="sZero">還沒填的都填 0</button></p>';
+  html += '<p style="margin:10px 0"><button type="button" class="applink" id="sZero">還沒填的都填 0</button>' + (nSpot ? ' <span class="hint">（🔍 抽查的不會自動填）</span>' : '') + '</p>';
   html += '<div class="extra"><label for="snote">備註 <span class="hint">（選填）</span></label><textarea id="snote" maxlength="200"></textarea></div>';
   html += '<p class="hint">' + (d.notify.length ? '送出後會通知：' + esc(d.notify.join('、')) + '（及管理者）' : '送出後會通知管理者') + '</p>';
   app.innerHTML = html;
@@ -1173,7 +1193,7 @@ function renderYarnStock() {
     if (e.target.matches('input[data-scode]')) { state.s[e.target.dataset.scode] = e.target.value; refreshYarnStock(); }
   });
   document.getElementById('sZero').onclick = function () {
-    d.specs.forEach(function (sp) { if (String(state.s[sp.code]).trim() === '') { state.s[sp.code] = '0'; app.querySelector('input[data-scode="' + sp.code + '"]').value = '0'; } });
+    d.specs.forEach(function (sp) { if (!sp.spot && String(state.s[sp.code]).trim() === '') { state.s[sp.code] = '0'; app.querySelector('input[data-scode="' + sp.code + '"]').value = '0'; } });
     refreshYarnStock();
   };
   mountBar('<div class="prog" id="prog"></div><button class="btn primary" id="submit" type="button">送出</button>');
@@ -1187,9 +1207,9 @@ function refreshYarnStock() {
     d.specs.filter(function (sp) { return sp.type === type; }).forEach(function (sp) {
       var n = sParse(state.s[sp.code]), msg = sBad(n), el = document.getElementById('ssub-' + sp.code);
       if (msg) { if (n === null) empty++; else { bad++; sbad++; } }
-      else { sum = addQty(sum, n); if (sp.last !== n) changed++; }
+      else { sum = addQty(sum, n); if (!sp.spot && sp.last !== n) changed++; }
       el.innerHTML = msg && n !== null ? '<span style="color:var(--low)">' + msg + '</span>'
-        : sp.last == null ? '' : (!msg && sp.last !== n ? '<span style="color:var(--warn)">上次 ' + fmt(sp.last) + '</span>' : '上次 ' + fmt(sp.last));
+        : sp.spot ? '<span style="color:var(--accent)">抽查：請實際點數</span>' : sp.last == null ? '' : (!msg && sp.last !== n ? '<span style="color:var(--warn)">上次 ' + fmt(sp.last) + '</span>' : '上次 ' + fmt(sp.last));
     });
     document.getElementById('ss' + ti).textContent = '合計 ' + fmt(sum) + ' 板' + (sbad ? '・' + sbad + ' 格要修' : '');
   });
@@ -1205,7 +1225,7 @@ function openYarnStockConfirm() {
     d.specs.filter(function (sp) { return sp.type === type; }).forEach(function (sp) { sum = addQty(sum, sParse(state.s[sp.code])); });
     total = addQty(total, sum); rows.push('<tr><td>' + esc(type) + '</td><td class="n">' + fmt(sum) + ' 板</td></tr>');
   });
-  var changed = d.specs.filter(function (sp) { return d.lastTime && sp.last !== sParse(state.s[sp.code]); });
+  var changed = d.specs.filter(function (sp) { return d.lastTime && !sp.spot && sp.last !== sParse(state.s[sp.code]); });
   var h = '<h3>確認送出？</h3><div>盤點日 ' + esc(document.getElementById('sdate').value) + '・共 <b>' + fmt(total) + '</b> 板</div><table class="tbl">' + rows.join('') + '</table>';
   if (changed.length) h += '<div class="sec">和上次不同（' + changed.length + ' 項）</div><ul>' + changed.slice(0, 15).map(function (sp) {
     return '<li>' + esc(sp.type + ' ' + sp.name) + '：' + fmt(sp.last == null ? 0 : sp.last) + ' → <b>' + fmt(sParse(state.s[sp.code])) + '</b></li>'; }).join('') + (changed.length > 15 ? '<li>…另 ' + (changed.length - 15) + ' 項</li>' : '') + '</ul>';
@@ -1249,7 +1269,7 @@ function demoCall(action, extra) {
     };
     if (action === 'init' && extra.form === 'yarnstock') return ok(Object.assign(base, { form: 'yarnstock', name: '示範組長', lastTime: '2026-11-01 16:20:00', lastBy: '示範組長', max: 999,
       notify: ['陳課長', '林副理'], specs: [{ code: 'T-A', type: '傳統型', name: '規格A', last: 3 }, { code: 'T-B', type: '傳統型', name: '規格B', last: 0 },
-        { code: 'H-A', type: '高速型', name: '規格A', last: 2.5 }, { code: 'H-C', type: '高速型', name: '規格C', last: null }] }));
+        { code: 'H-A', type: '高速型', name: '規格A', last: null, spot: true }, { code: 'H-C', type: '高速型', name: '規格C', last: null }] }));
     if (action === 'submitYarnStock') return ok({ ok: true, batchId: 'S-DEMO', rows: extra.entries.length, total: extra.entries.reduce(function (a, e) { return addQty(a, e.pallets); }, 0), notified: 2 });
     if (action === 'init' && extra.form === 'machine') ok(Object.assign(base, { form: 'machine', name: '示範班長', lastTime: '2026-11-02 08:05:00', lastBy: '示範班長', specs: [
         { code: 'T-A', type: '傳統型', name: '規格A', perDay: 300, count: 3 }, { code: 'T-B', type: '傳統型', name: '規格B', perDay: 250, count: 2 },
@@ -1277,8 +1297,10 @@ function demoCall(action, extra) {
         specs: [{ code: 'T-A', type: '傳統型', name: '規格A' }, { code: 'T-B', type: '傳統型', name: '規格B' }, { code: 'H-A', type: '高速型', name: '規格A' }],
         plants: [
           { plant: '如興', hosts: [{ host: '如2', type: '傳統型', temps: 13, last: lastH(200), today: null, lines: [{ line: '如2-1', last: lv(0) }, { line: '如2-2', last: lv(2) }] },
-                                   { host: '如3', type: '傳統型', temps: 13, last: lastH(210), today: null, lines: [{ line: '如3-1', last: lv(1) }, { line: '如3-2', last: lv(3) }] }] },
-          { plant: '晶磊', hosts: [{ host: '晶1', type: '高速型', temps: 13, last: lastH(205), today: { time: '07:12', by: '示範課長', status: '運轉' }, lines: [{ line: '晶1', last: lv(0) }] },
+                                   { host: '如3', type: '傳統型', temps: 13, last: lastH(210), today: null, lines: [{ line: '如3-1', last: lv(1) }, { line: '如3-2', last: lv(3) }],
+                                     spot: { photo: false, fields: [{ line: '', field: '溫度表4℃' }, { line: '', field: '水溫℃' }, { line: '如3-2', field: '電熱1℃' }] } }] },
+          { plant: '晶磊', hosts: [{ host: '晶1', type: '高速型', temps: 13, last: lastH(205), today: { time: '07:12', by: '示範課長', status: '運轉' }, lines: [{ line: '晶1', last: lv(0) }],
+                                     spot: { photo: true, fields: [{ line: '', field: '溫度表2℃' }, { line: '', field: '溫度表9℃' }, { line: '晶1', field: '電熱2℃' }] } },
                                    { host: '晶2', type: '高速型', temps: 13, last: null, today: null, lines: [{ line: '晶2', last: null }] }] }] }));
     }
     else if (action === 'submitYarn') ok({ ok: true, batchId: 'DEMO-Y' + Date.now().toString().slice(-6),
