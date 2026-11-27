@@ -208,8 +208,8 @@ function param(name) {
   return r ? decodeURIComponent(r[1]) : null;
 }
 var DEMO = CONFIG.FORCE_DEMO || param('demo') === '1';
-var FORM = ['machine', 'receive', 'apply', 'yarn'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
-var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌', yarn: '抽紗機數據' };
+var FORM = ['machine', 'receive', 'apply', 'yarn', 'yarnstock'].indexOf(param('form')) >= 0 ? param('form') : 'stock';
+var TITLES = { stock: '庫存盤點', receive: '進貨登錄', machine: '機台開機狀況', apply: '申報新規格／新廠牌', yarn: '抽紗機數據', yarnstock: '庫存紗盤點' };
 document.title = TITLES[FORM];
 document.getElementById('title').textContent = TITLES[FORM];
 
@@ -274,6 +274,7 @@ function start() {
      if (FORM === 'receive') return renderReceive();
      if (FORM === 'apply') return renderApply();
      if (FORM === 'yarn') return renderYarn();
+     if (FORM === 'yarnstock') return renderYarnStock();
      renderStock();
    })
    .catch(function (e) { renderError(e.message || String(e)); });
@@ -1013,14 +1014,14 @@ function renderYarn() {
   yHosts().forEach(function (h, hi) {
     var st = state.y.hosts[h.host];
     var badge = h.today ? '<span class="badge done">今天已填 ' + esc(h.today.time) + '</span>' : '<span class="badge todo">今天未填</span>';
-    html += '<details class="cat" data-yhost="' + esc(h.host) + '"' + (hi === 0 ? ' open' : '') + '><summary><span class="cname">' + esc(h.host) + '</span>' + badge +
+    html += '<details class="cat" data-yhost="' + esc(h.host) + '"' + (hi === 0 ? ' open' : '') + '><summary><span class="cname">' + esc(h.host) + (h.type ? ' <small class="hint">' + esc(h.type) + '</small>' : '') + '</span>' + badge +
       '<span class="csum" id="ysum' + hi + '"></span></summary><div class="cbody" style="padding:0">';
     html += '<div class="ysts"><button type="button" class="chip" data-ysts="運轉" data-yh="' + esc(h.host) + '">運轉</button><button type="button" class="chip" data-ysts="停機" data-yh="' + esc(h.host) + '">今天停機</button></div>';
     html += '<div class="yrun" id="yrun' + hi + '">';
     if (h.last) html += '<p class="hint ysame">上次：' + esc(h.last.date) + ' ' + esc(h.last.by) + '　<button type="button" class="applink" data-ysame="' + esc(h.host) + '">全部改回上次的值</button></p>';
     else html += '<p class="hint ysame">這台還沒有紀錄，請全部填寫。</p>';
-    html += '<div class="ygrid"><label class="yf" style="grid-column:1/-1"><span class="yl">紗種規格</span><select class="ysel" data-yspec="' + esc(h.host) + '"><option value="">請選擇</option>' +
-      d.specs.map(function (sp) { return '<option value="' + esc(sp.code) + '"' + (sp.code === st.specCode ? ' selected' : '') + '>' + esc(sp.type + ' ' + sp.name) + '</option>'; }).join('') +
+    html += '<div class="ygrid"><label class="yf" style="grid-column:1/-1"><span class="yl">紗種規格' + (h.type ? '（' + esc(h.type) + '）' : '') + '</span><select class="ysel" data-yspec="' + esc(h.host) + '"><option value="">請選擇</option>' +
+      d.specs.filter(function (sp) { return !h.type || sp.type === h.type; }).map(function (sp) { return '<option value="' + esc(sp.code) + '"' + (sp.code === st.specCode ? ' selected' : '') + '>' + esc(sp.name) + '</option>'; }).join('') +
       '</select></label>' + yInput(h.host + '||丹尼數D', '丹尼數D', '丹尼數 D（實測）', st.denier, h.last ? h.last.denier : null) + '</div>';
     html += '<div class="ysec">主機（' + (h.lines.length > 1 ? '兩條線共用' : '押出') + '）</div><div class="ygrid">';
     yFieldsOf(h).filter(function (x) { return !x.line; }).forEach(function (x) { html += yInput(x.key, x.field, yShort(x.field), st.v[x.key], x.last); });
@@ -1133,6 +1134,96 @@ function submitYarn() {
 }
 
 /* ================================================================
+   六、庫存紗盤點（照拉絲規格盤棧板數，可填 .5；盤完通知主管）
+   ================================================================ */
+function sParse(raw) {
+  var t = String(raw == null ? '' : raw).trim().replace(/[０-９．]/g, function (c) { return c === '．' ? '.' : String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  if (t === '') return null;
+  var n = Number(t);
+  return isFinite(n) ? n : NaN;
+}
+function sBad(n) { var max = state.data.max; return n === null ? '要填（沒有填 0）' : isNaN(n) ? '不是數字' : n < 0 || n > max ? '要在 0～' + max : Math.round(n * 2) !== n * 2 ? '只能整數或 .5' : ''; }
+function sTypes() {
+  var types = [];
+  state.data.specs.forEach(function (sp) { if (types.indexOf(sp.type) < 0) types.push(sp.type); });
+  return types;
+}
+function renderYarnStock() {
+  var d = state.data;
+  state.s = {};
+  d.specs.forEach(function (sp) { state.s[sp.code] = sp.last == null ? '' : String(sp.last); });
+  document.getElementById('meta').textContent = d.name + (d.lastTime ? '・上次 ' + md(d.lastTime) + ' ' + d.lastBy : '・第一次盤點');
+  var html = dateBar('sdate', '盤點日');
+  html += '<p class="hint" style="margin:0 0 10px">' + (d.lastTime ? '棧板數已帶上次的值，<b>只改有變的</b>；' : '') + '每個規格都要填，沒有庫存填 0；不滿一板可填 0.5。</p>';
+  sTypes().forEach(function (type, ti) {
+    var list = d.specs.filter(function (sp) { return sp.type === type; });
+    html += '<details class="cat"' + (ti === 0 ? ' open' : '') + '><summary><span class="cname">' + esc(type) + '</span><span class="csum" id="ss' + ti + '"></span></summary><div class="cbody">';
+    list.forEach(function (sp) {
+      html += '<div class="row"><div class="lab"><div class="bn">' + esc(sp.name) + '</div><div class="sub" id="ssub-' + esc(sp.code) + '"></div></div>' +
+        '<label class="qty"><input inputmode="decimal" autocomplete="off" aria-label="' + esc(sp.name) + ' 棧板數" data-scode="' + esc(sp.code) + '" value="' + esc(state.s[sp.code]) + '" placeholder="輸入"><span class="unit">板</span></label></div>';
+    });
+    html += '</div></details>';
+  });
+  html += '<p style="margin:10px 0"><button type="button" class="applink" id="sZero">還沒填的都填 0</button></p>';
+  html += '<div class="extra"><label for="snote">備註 <span class="hint">（選填）</span></label><textarea id="snote" maxlength="200"></textarea></div>';
+  html += '<p class="hint">' + (d.notify.length ? '送出後會通知：' + esc(d.notify.join('、')) + '（及管理者）' : '送出後會通知管理者') + '</p>';
+  app.innerHTML = html;
+  accordion(app);
+  app.addEventListener('input', function (e) {
+    if (e.target.matches('input[data-scode]')) { state.s[e.target.dataset.scode] = e.target.value; refreshYarnStock(); }
+  });
+  document.getElementById('sZero').onclick = function () {
+    d.specs.forEach(function (sp) { if (String(state.s[sp.code]).trim() === '') { state.s[sp.code] = '0'; app.querySelector('input[data-scode="' + sp.code + '"]').value = '0'; } });
+    refreshYarnStock();
+  };
+  mountBar('<div class="prog" id="prog"></div><button class="btn primary" id="submit" type="button">送出</button>');
+  document.getElementById('submit').onclick = openYarnStockConfirm;
+  wireDate('sdate', refreshYarnStock);
+}
+function refreshYarnStock() {
+  var d = state.data, bad = 0, empty = 0, changed = 0;
+  sTypes().forEach(function (type, ti) {
+    var sum = 0, sbad = 0;
+    d.specs.filter(function (sp) { return sp.type === type; }).forEach(function (sp) {
+      var n = sParse(state.s[sp.code]), msg = sBad(n), el = document.getElementById('ssub-' + sp.code);
+      if (msg) { if (n === null) empty++; else { bad++; sbad++; } }
+      else { sum = addQty(sum, n); if (sp.last !== n) changed++; }
+      el.innerHTML = msg && n !== null ? '<span style="color:var(--low)">' + msg + '</span>'
+        : sp.last == null ? '' : (!msg && sp.last !== n ? '<span style="color:var(--warn)">上次 ' + fmt(sp.last) + '</span>' : '上次 ' + fmt(sp.last));
+    });
+    document.getElementById('ss' + ti).textContent = '合計 ' + fmt(sum) + ' 板' + (sbad ? '・' + sbad + ' 格要修' : '');
+  });
+  var dv = document.getElementById('sdate').value;
+  document.getElementById('prog').innerHTML = state.busy ? '送出中…' : !validDate(dv) ? '盤點日要在 ' + md(d.minDate) + '～今天'
+    : bad ? '還有 <b>' + bad + '</b> 格要修' : empty ? '還有 <b>' + empty + '</b> 個規格沒填' : '可以送出（改了 ' + changed + ' 項）';
+  document.getElementById('submit').disabled = state.busy || bad > 0 || empty > 0 || !validDate(dv);
+}
+function openYarnStockConfirm() {
+  var d = state.data, total = 0, rows = [];
+  sTypes().forEach(function (type) {
+    var sum = 0;
+    d.specs.filter(function (sp) { return sp.type === type; }).forEach(function (sp) { sum = addQty(sum, sParse(state.s[sp.code])); });
+    total = addQty(total, sum); rows.push('<tr><td>' + esc(type) + '</td><td class="n">' + fmt(sum) + ' 板</td></tr>');
+  });
+  var changed = d.specs.filter(function (sp) { return d.lastTime && sp.last !== sParse(state.s[sp.code]); });
+  var h = '<h3>確認送出？</h3><div>盤點日 ' + esc(document.getElementById('sdate').value) + '・共 <b>' + fmt(total) + '</b> 板</div><table class="tbl">' + rows.join('') + '</table>';
+  if (changed.length) h += '<div class="sec">和上次不同（' + changed.length + ' 項）</div><ul>' + changed.slice(0, 15).map(function (sp) {
+    return '<li>' + esc(sp.type + ' ' + sp.name) + '：' + fmt(sp.last == null ? 0 : sp.last) + ' → <b>' + fmt(sParse(state.s[sp.code])) + '</b></li>'; }).join('') + (changed.length > 15 ? '<li>…另 ' + (changed.length - 15) + ' 項</li>' : '') + '</ul>';
+  h += '<div class="hint">' + (d.notify.length ? '送出後通知：' + esc(d.notify.join('、')) + '（及管理者）' : '送出後通知管理者') + '</div>';
+  showDialog(h, submitYarnStock);
+}
+function submitYarnStock() {
+  var btn = document.getElementById('submit');
+  state.busy = true; btn.textContent = '送出中…'; refreshYarnStock();
+  var entries = state.data.specs.map(function (sp) { return { code: sp.code, pallets: sParse(state.s[sp.code]) }; });
+  call('submitYarnStock', { submitId: state.submitId, date: document.getElementById('sdate').value, entries: entries, note: document.getElementById('snote').value })
+    .then(function (res) {
+      renderDoneShell('已送出，謝謝！', '<p>共 ' + res.rows + ' 個規格・合計 ' + fmt(res.total) + ' 板</p><p>' + (res.notified ? '已通知主管 ' + res.notified + ' 位及管理者。' : '已通知管理者。') + '</p>');
+    })
+    .catch(function (e) { failSubmit(e, btn, refreshYarnStock); });
+}
+
+/* ================================================================
    示範資料（?demo=1 或 FORCE_DEMO 時使用；不連 LINE 與後端）
    ================================================================ */
 function demoCall(action, extra) {
@@ -1156,6 +1247,10 @@ function demoCall(action, extra) {
       'PE|HDPE 粒': { base: 2600, receipts: 1000, usage: 120, theo: 3480 }, '碳酸鈣|碳酸鈣母料': { base: 1200, receipts: 0, usage: 455, theo: 745 },
       '色母|白色母': { base: 80, receipts: 0, usage: 70, theo: 10 }, '色母|黑色母': { base: 30, receipts: 0, usage: 0, theo: 30 }
     };
+    if (action === 'init' && extra.form === 'yarnstock') return ok(Object.assign(base, { form: 'yarnstock', name: '示範組長', lastTime: '2026-11-01 16:20:00', lastBy: '示範組長', max: 999,
+      notify: ['陳課長', '林副理'], specs: [{ code: 'T-A', type: '傳統型', name: '規格A', last: 3 }, { code: 'T-B', type: '傳統型', name: '規格B', last: 0 },
+        { code: 'H-A', type: '高速型', name: '規格A', last: 2.5 }, { code: 'H-C', type: '高速型', name: '規格C', last: null }] }));
+    if (action === 'submitYarnStock') return ok({ ok: true, batchId: 'S-DEMO', rows: extra.entries.length, total: extra.entries.reduce(function (a, e) { return addQty(a, e.pallets); }, 0), notified: 2 });
     if (action === 'init' && extra.form === 'machine') ok(Object.assign(base, { form: 'machine', name: '示範班長', lastTime: '2026-11-02 08:05:00', lastBy: '示範班長', specs: [
         { code: 'T-A', type: '傳統型', name: '規格A', perDay: 300, count: 3 }, { code: 'T-B', type: '傳統型', name: '規格B', perDay: 250, count: 2 },
         { code: 'T-C', type: '傳統型', name: '規格C', perDay: 200, count: 0 },
@@ -1181,10 +1276,10 @@ function demoCall(action, extra) {
       ok(Object.assign(base, { form: 'yarn', name: '示範課長', hostFields: hf, lineFields: lf, limits: lim, warnRatio: 0.2, tempMax: 13,
         specs: [{ code: 'T-A', type: '傳統型', name: '規格A' }, { code: 'T-B', type: '傳統型', name: '規格B' }, { code: 'H-A', type: '高速型', name: '規格A' }],
         plants: [
-          { plant: '如興', hosts: [{ host: '如2', temps: 13, last: lastH(200), today: null, lines: [{ line: '如2-1', last: lv(0) }, { line: '如2-2', last: lv(2) }] },
-                                   { host: '如3', temps: 13, last: lastH(210), today: null, lines: [{ line: '如3-1', last: lv(1) }, { line: '如3-2', last: lv(3) }] }] },
-          { plant: '晶磊', hosts: [{ host: '晶1', temps: 13, last: lastH(205), today: { time: '07:12', by: '示範課長', status: '運轉' }, lines: [{ line: '晶1', last: lv(0) }] },
-                                   { host: '晶2', temps: 13, last: null, today: null, lines: [{ line: '晶2', last: null }] }] }] }));
+          { plant: '如興', hosts: [{ host: '如2', type: '傳統型', temps: 13, last: lastH(200), today: null, lines: [{ line: '如2-1', last: lv(0) }, { line: '如2-2', last: lv(2) }] },
+                                   { host: '如3', type: '傳統型', temps: 13, last: lastH(210), today: null, lines: [{ line: '如3-1', last: lv(1) }, { line: '如3-2', last: lv(3) }] }] },
+          { plant: '晶磊', hosts: [{ host: '晶1', type: '高速型', temps: 13, last: lastH(205), today: { time: '07:12', by: '示範課長', status: '運轉' }, lines: [{ line: '晶1', last: lv(0) }] },
+                                   { host: '晶2', type: '高速型', temps: 13, last: null, today: null, lines: [{ line: '晶2', last: null }] }] }] }));
     }
     else if (action === 'submitYarn') ok({ ok: true, batchId: 'DEMO-Y' + Date.now().toString().slice(-6),
       rows: extra.hosts.reduce(function (a, h) { return a + (h.lines ? h.lines.length : (h.host.indexOf('晶') === 0 ? 1 : 2)); }, 0) });
